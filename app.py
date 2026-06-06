@@ -31,7 +31,15 @@ from visualization import (
     create_reentry_overload_plot,
     create_reentry_ground_track_plot,
     create_debris_field_plot,
-    create_reentry_window_heatmap
+    create_reentry_window_heatmap,
+    create_b_plane_plot, create_approach_distance_plot,
+    create_collision_cumulative_plot, create_distance_distribution_plot,
+    create_batch_screening_table
+)
+from collision_risk import (
+    collision_risk_analysis, find_min_dv_maneuver,
+    batch_screening, generate_collision_statistics,
+    get_position_covariance
 )
 from reentry import (
     ReentryVehicle, ReentryInitialConditions,
@@ -68,7 +76,8 @@ with st.sidebar:
             "✨ 星座设计与覆盖",
             "🔢 数值积分传播",
             "⚡ 机动优化",
-            "🔥 再入轨迹分析"
+            "🔥 再入轨迹分析",
+            "☄️ 碰撞风险评估"
         ]
     )
     st.markdown("---")
@@ -1493,6 +1502,359 @@ elif page == "🔥 再入轨迹分析":
                 
                 if len(window_result['valid_parameters']) > 20:
                     st.info(f"仅显示前20组最优参数，共 {len(window_result['valid_parameters'])} 组可行解。")
+
+elif page == "☄️ 碰撞风险评估":
+    st.header("☄️ 空间碎片碰撞风险评估")
+    st.markdown("""
+    本模块实现空间碎片碰撞风险评估功能，支持单对碰撞分析、批量碎片筛查和碰撞统计分析。
+    采用B平面短期遭遇模型计算碰撞概率，支持自动规避机动设计。
+    """)
+    
+    tab1, tab2, tab3 = st.tabs(["单对碰撞分析", "批量筛查", "碰撞统计"])
+    
+    with tab1:
+        st.subheader("单对碰撞分析")
+        
+        col_params, col_results = st.columns([1, 1])
+        
+        with col_params:
+            st.markdown("#### 物体1（主航天器）")
+            a1 = st.number_input("半长轴 a₁ (km)", value=7000.0, min_value=6400.0, step=100.0, key="cr_a1")
+            e1 = st.number_input("偏心率 e₁", value=0.001, min_value=0.0, max_value=0.5, step=0.001, key="cr_e1")
+            i1 = st.number_input("倾角 i₁ (°)", value=97.5, min_value=0.0, max_value=180.0, step=1.0, key="cr_i1")
+            raan1 = st.number_input("RAAN Ω₁ (°)", value=0.0, min_value=0.0, max_value=360.0, step=1.0, key="cr_raan1")
+            argp1 = st.number_input("近地点幅角 ω₁ (°)", value=0.0, min_value=0.0, max_value=360.0, step=1.0, key="cr_argp1")
+            nu1 = st.number_input("真近点角 ν₁ (°)", value=0.0, min_value=0.0, max_value=360.0, step=1.0, key="cr_nu1")
+            r1_radius = st.number_input("等效半径 r₁ (m)", value=5.0, min_value=0.1, step=0.5, key="cr_r1")
+            sigma1 = st.number_input("位置不确定性 σ₁ (km)", value=0.1, min_value=0.001, step=0.01, key="cr_sigma1")
+            
+            st.markdown("---")
+            st.markdown("#### 物体2（碎片/目标）")
+            a2 = st.number_input("半长轴 a₂ (km)", value=7001.0, min_value=6400.0, step=100.0, key="cr_a2")
+            e2 = st.number_input("偏心率 e₂", value=0.002, min_value=0.0, max_value=0.5, step=0.001, key="cr_e2")
+            i2 = st.number_input("倾角 i₂ (°)", value=97.6, min_value=0.0, max_value=180.0, step=1.0, key="cr_i2")
+            raan2 = st.number_input("RAAN Ω₂ (°)", value=0.5, min_value=0.0, max_value=360.0, step=1.0, key="cr_raan2")
+            argp2 = st.number_input("近地点幅角 ω₂ (°)", value=0.0, min_value=0.0, max_value=360.0, step=1.0, key="cr_argp2")
+            nu2 = st.number_input("真近点角 ν₂ (°)", value=30.0, min_value=0.0, max_value=360.0, step=1.0, key="cr_nu2")
+            r2_radius = st.number_input("等效半径 r₂ (m)", value=3.0, min_value=0.1, step=0.5, key="cr_r2")
+            sigma2 = st.number_input("位置不确定性 σ₂ (km)", value=0.15, min_value=0.001, step=0.01, key="cr_sigma2")
+            
+            st.markdown("---")
+            st.markdown("#### 分析参数")
+            pred_days = st.slider("预测时长 (天)", 1, 30, 7, key="cr_pred_days")
+            prob_threshold = st.number_input("碰撞概率预警阈值", value=1e-4, format="%.1e", key="cr_threshold")
+            t_maneuver_offset_hours = st.slider("规避机动提前时间 (小时)", 1, 24, 6, key="cr_maneuver_offset")
+            
+            if st.button("开始碰撞风险分析", type="primary", key="cr_run_single"):
+                with st.spinner("正在进行碰撞风险分析..."):
+                    try:
+                        el1 = KeplerElements(a1, e1, i1, raan1, argp1, nu1, units='km_deg')
+                        el2 = KeplerElements(a2, e2, i2, raan2, argp2, nu2, units='km_deg')
+                        
+                        cov1 = get_position_covariance(sigma1)
+                        cov2 = get_position_covariance(sigma2)
+                        
+                        result = collision_risk_analysis(
+                            el1, el2, cov1, cov2,
+                            radius1=r1_radius / 1000.0,
+                            radius2=r2_radius / 1000.0,
+                            t_start=0,
+                            t_end=pred_days * 86400,
+                            dt_coarse=30
+                        )
+                        
+                        st.session_state['single_collision_result'] = result
+                        st.session_state['single_collision_done'] = True
+                        st.session_state['el1_single'] = el1
+                        st.session_state['el2_single'] = el2
+                        st.session_state['cov1_single'] = cov1
+                        st.session_state['cov2_single'] = cov2
+                        st.session_state['r1_single'] = r1_radius / 1000.0
+                        st.session_state['r2_single'] = r2_radius / 1000.0
+                        st.session_state['prob_threshold_single'] = prob_threshold
+                        st.session_state['t_maneuver_offset_single'] = t_maneuver_offset_hours * 3600
+                        
+                        st.success("分析完成!")
+                    except Exception as ex:
+                        st.error(f"分析失败: {str(ex)}")
+                        st.session_state['single_collision_done'] = False
+        
+        with col_results:
+            if not st.session_state.get('single_collision_done', False):
+                st.info("请设置参数后点击 '开始碰撞风险分析' 按钮")
+            else:
+                result = st.session_state['single_collision_result']
+                
+                st.markdown("#### 分析结果")
+                
+                t_ca_hours = result['t_closest'] / 3600
+                prob = result['collision_probability']
+                
+                col_res1, col_res2 = st.columns(2)
+                with col_res1:
+                    st.metric("最近接近距离", f"{result['min_distance']:.3f} km")
+                    st.metric("最近接近时刻", f"{t_ca_hours:.2f} 小时")
+                with col_res2:
+                    if prob > prob_threshold:
+                        st.metric("碰撞概率", f"{prob:.2e}", "⚠️ 超过阈值", delta_color="inverse")
+                    else:
+                        st.metric("碰撞概率", f"{prob:.2e}", "✓ 安全", delta_color="normal")
+                    st.metric("碰撞截面半径", f"{result['collision_radius'] * 1000:.1f} m")
+                
+                st.markdown("**B平面遭遇位置:**")
+                st.write(f"ξ = {result['b_plane_pos'][0]:.4f} km, ζ = {result['b_plane_pos'][1]:.4f} km")
+                
+                st.markdown("**相对速度:**")
+                v_rel_mag = np.linalg.norm(result['v_rel'])
+                st.write(f"{v_rel_mag:.3f} km/s")
+                
+                if prob > prob_threshold:
+                    st.warning("⚠️ 碰撞概率超过预警阈值，建议执行规避机动")
+                    
+                    if st.button("计算最小Δv规避方案", key="cr_calc_maneuver"):
+                        with st.spinner("正在搜索最优规避方案..."):
+                            try:
+                                maneuver = find_min_dv_maneuver(
+                                    st.session_state['el1_single'],
+                                    st.session_state['el2_single'],
+                                    st.session_state['cov1_single'],
+                                    st.session_state['cov2_single'],
+                                    radius1=st.session_state['r1_single'],
+                                    radius2=st.session_state['r2_single'],
+                                    t_ca=result['t_closest'],
+                                    t_maneuver_offset=st.session_state['t_maneuver_offset_single'],
+                                    target_prob=prob_threshold / 100,
+                                    max_dv=0.5,
+                                    dv_step=0.0005
+                                )
+                                
+                                st.session_state['maneuver_result'] = maneuver
+                                st.session_state['maneuver_done'] = True
+                                
+                                if maneuver['success']:
+                                    st.success(f"找到最优规避方案!")
+                                else:
+                                    st.warning(maneuver['message'])
+                            except Exception as ex:
+                                st.error(f"规避方案计算失败: {str(ex)}")
+                    
+                    if st.session_state.get('maneuver_done', False):
+                        maneuver = st.session_state['maneuver_result']
+                        if maneuver['success']:
+                            st.markdown("#### 规避方案")
+                            col_man1, col_man2 = st.columns(2)
+                            with col_man1:
+                                st.metric("所需Δv", f"{maneuver['dv_magnitude'] * 1000:.2f} m/s")
+                                st.metric("机动时刻", f"{maneuver['t_maneuver'] / 3600:.2f} 小时")
+                            with col_man2:
+                                st.metric("径向分量", f"{maneuver['radial_component'] * 1000:.2f} m/s")
+                                st.metric("迹向分量", f"{maneuver['along_track_component'] * 1000:.2f} m/s")
+                                st.metric("法向分量", f"{maneuver['normal_component'] * 1000:.2f} m/s")
+                            
+                            st.markdown("**规避后碰撞概率:**")
+                            prob_after = maneuver['result_after_maneuver']['collision_probability']
+                            st.write(f"{prob_after:.2e} (降至目标值以下)")
+                
+                st.markdown("---")
+                
+                fig_bplane = create_b_plane_plot(result)
+                st.plotly_chart(fig_bplane, use_container_width=True)
+                
+                fig_approach = create_approach_distance_plot(result)
+                st.plotly_chart(fig_approach, use_container_width=True)
+    
+    with tab2:
+        st.subheader("批量碎片筛查")
+        
+        col_batch_params, col_batch_results = st.columns([1, 2])
+        
+        with col_batch_params:
+            st.markdown("#### 主航天器参数")
+            a_main = st.number_input("半长轴 (km)", value=7000.0, min_value=6400.0, step=100.0, key="batch_a_main")
+            e_main = st.number_input("偏心率", value=0.001, min_value=0.0, max_value=0.5, step=0.001, key="batch_e_main")
+            i_main = st.number_input("倾角 (°)", value=97.5, min_value=0.0, max_value=180.0, step=1.0, key="batch_i_main")
+            raan_main = st.number_input("RAAN (°)", value=0.0, min_value=0.0, max_value=360.0, step=1.0, key="batch_raan_main")
+            argp_main = st.number_input("近地点幅角 (°)", value=0.0, min_value=0.0, max_value=360.0, step=1.0, key="batch_argp_main")
+            nu_main = st.number_input("真近点角 (°)", value=0.0, min_value=0.0, max_value=360.0, step=1.0, key="batch_nu_main")
+            r_main_radius = st.number_input("等效半径 (m)", value=5.0, min_value=0.1, step=0.5, key="batch_r_main")
+            sigma_main = st.number_input("位置不确定性 (km)", value=0.1, min_value=0.001, step=0.01, key="batch_sigma_main")
+            
+            st.markdown("---")
+            st.markdown("#### 筛查参数")
+            num_debris = st.slider("碎片目标数量", 1, 20, 5, key="batch_num_debris")
+            batch_pred_days = st.slider("预测时长 (天)", 1, 30, 7, key="batch_pred_days")
+            batch_prob_threshold = st.number_input("预警阈值", value=1e-4, format="%.1e", key="batch_threshold")
+            batch_maneuver_offset = st.slider("规避提前时间 (小时)", 1, 24, 6, key="batch_maneuver_offset")
+            
+            if st.button("生成示例碎片并筛查", type="primary", key="batch_run"):
+                with st.spinner(f"正在对 {num_debris} 个目标进行碰撞风险筛查..."):
+                    try:
+                        el_main = KeplerElements(a_main, e_main, i_main, raan_main, argp_main, nu_main, units='km_deg')
+                        cov_main = get_position_covariance(sigma_main)
+                        
+                        debris_list = []
+                        debris_cov_list = []
+                        debris_radii = []
+                        np.random.seed(42)
+                        
+                        for i in range(num_debris):
+                            a_d = a_main + np.random.uniform(-50, 50)
+                            e_d = np.random.uniform(0, 0.01)
+                            i_d = i_main + np.random.uniform(-2, 2)
+                            raan_d = np.random.uniform(0, 360)
+                            argp_d = np.random.uniform(0, 360)
+                            nu_d = np.random.uniform(0, 360)
+                            
+                            el_d = KeplerElements(a_d, e_d, i_d, raan_d, argp_d, nu_d, units='km_deg')
+                            debris_list.append(el_d)
+                            
+                            sigma_d = np.random.uniform(0.05, 0.2)
+                            debris_cov_list.append(get_position_covariance(sigma_d))
+                            
+                            debris_radii.append(np.random.uniform(1, 10) / 1000.0)
+                        
+                        batch_results = batch_screening(
+                            el_main, debris_list, cov_main, debris_cov_list,
+                            main_radius=r_main_radius / 1000.0,
+                            debris_radii=debris_radii,
+                            t_start=0,
+                            t_end=batch_pred_days * 86400,
+                            dt_coarse=30,
+                            prob_threshold=batch_prob_threshold,
+                            target_prob=batch_prob_threshold / 100,
+                            t_maneuver_offset=batch_maneuver_offset * 3600
+                        )
+                        
+                        st.session_state['batch_results'] = batch_results
+                        st.session_state['batch_done'] = True
+                        
+                        num_high_risk = sum(1 for r in batch_results if r['exceeds_threshold'])
+                        if num_high_risk > 0:
+                            st.warning(f"筛查完成! 发现 {num_high_risk} 个高风险目标")
+                        else:
+                            st.success("筛查完成! 所有目标碰撞概率均在安全范围内")
+                    except Exception as ex:
+                        st.error(f"筛查失败: {str(ex)}")
+                        st.session_state['batch_done'] = False
+        
+        with col_batch_results:
+            if not st.session_state.get('batch_done', False):
+                st.info("请设置参数后点击 '生成示例碎片并筛查' 按钮")
+            else:
+                batch_results = st.session_state['batch_results']
+                
+                fig_table = create_batch_screening_table(batch_results, batch_prob_threshold)
+                st.plotly_chart(fig_table, use_container_width=True)
+                
+                high_risk = [r for r in batch_results if r['exceeds_threshold']]
+                if high_risk:
+                    st.markdown("---")
+                    st.markdown("#### 高风险目标详情")
+                    
+                    for idx, risk in enumerate(high_risk):
+                        with st.expander(f"碎片 #{risk['debris_id']} - 碰撞概率: {risk['collision_probability']:.2e}", expanded=(idx == 0)):
+                            t_ca = risk['t_closest'] / 3600
+                            st.write(f"最近接近距离: {risk['min_distance']:.3f} km")
+                            st.write(f"最近接近时刻: {t_ca:.2f} 小时")
+                            
+                            if 'maneuver' in risk and risk['maneuver']['success']:
+                                man = risk['maneuver']
+                                st.markdown("**推荐规避方案:**")
+                                st.write(f"所需Δv: {man['dv_magnitude'] * 1000:.2f} m/s")
+                                st.write(f"机动时刻: {man['t_maneuver'] / 3600:.2f} 小时")
+                                st.write(f"径向分量: {man['radial_component'] * 1000:.2f} m/s")
+                                st.write(f"迹向分量: {man['along_track_component'] * 1000:.2f} m/s")
+                                st.write(f"法向分量: {man['normal_component'] * 1000:.2f} m/s")
+                            elif 'maneuver' in risk and not risk['maneuver']['success']:
+                                st.warning("未找到有效的规避方案")
+                            
+                            fig_bplane_risk = create_b_plane_plot(risk['raw_result'])
+                            st.plotly_chart(fig_bplane_risk, use_container_width=True)
+    
+    with tab3:
+        st.subheader("碰撞统计分析")
+        
+        col_stats_params, col_stats_results = st.columns([1, 2])
+        
+        with col_stats_params:
+            st.markdown("#### 主航天器参数")
+            a_stats = st.number_input("半长轴 (km)", value=7000.0, min_value=6400.0, step=100.0, key="stats_a")
+            e_stats = st.number_input("偏心率", value=0.001, min_value=0.0, max_value=0.5, step=0.001, key="stats_e")
+            i_stats = st.number_input("倾角 (°)", value=97.5, min_value=0.0, max_value=180.0, step=1.0, key="stats_i")
+            sigma_stats = st.number_input("位置不确定性 (km)", value=0.1, min_value=0.001, step=0.01, key="stats_sigma")
+            
+            st.markdown("---")
+            st.markdown("#### 统计参数")
+            num_debris_stats = st.slider("碎片数量", 5, 50, 20, key="stats_num_debris")
+            
+            if st.button("生成碰撞统计数据", type="primary", key="stats_run"):
+                with st.spinner("正在生成碰撞统计数据..."):
+                    try:
+                        el_main_stats = KeplerElements(a_stats, e_stats, i_stats, 0, 0, 0, units='km_deg')
+                        cov_main_stats = get_position_covariance(sigma_stats)
+                        
+                        debris_list_stats = []
+                        debris_cov_list_stats = []
+                        debris_radii_stats = []
+                        np.random.seed(123)
+                        
+                        for i in range(num_debris_stats):
+                            a_d = a_stats + np.random.uniform(-100, 100)
+                            e_d = np.random.uniform(0, 0.02)
+                            i_d = i_stats + np.random.uniform(-5, 5)
+                            raan_d = np.random.uniform(0, 360)
+                            argp_d = np.random.uniform(0, 360)
+                            nu_d = np.random.uniform(0, 360)
+                            
+                            el_d = KeplerElements(a_d, e_d, i_d, raan_d, argp_d, nu_d, units='km_deg')
+                            debris_list_stats.append(el_d)
+                            
+                            sigma_d = np.random.uniform(0.05, 0.3)
+                            debris_cov_list_stats.append(get_position_covariance(sigma_d))
+                            
+                            debris_radii_stats.append(np.random.uniform(0.5, 8) / 1000.0)
+                        
+                        stats_result = generate_collision_statistics(
+                            el_main_stats, debris_list_stats, cov_main_stats, debris_cov_list_stats,
+                            main_radius=5.0 / 1000.0,
+                            debris_radii=debris_radii_stats,
+                            time_windows=[1, 2, 3, 5, 7, 14, 30],
+                            t_start=0,
+                            t_end=30 * 86400
+                        )
+                        
+                        st.session_state['stats_result'] = stats_result
+                        st.session_state['stats_done'] = True
+                        st.success("统计数据生成完成!")
+                    except Exception as ex:
+                        st.error(f"统计分析失败: {str(ex)}")
+                        st.session_state['stats_done'] = False
+        
+        with col_stats_results:
+            if not st.session_state.get('stats_done', False):
+                st.info("请设置参数后点击 '生成碰撞统计数据' 按钮")
+            else:
+                stats_result = st.session_state['stats_result']
+                
+                fig_cumulative = create_collision_cumulative_plot(stats_result)
+                st.plotly_chart(fig_cumulative, use_container_width=True)
+                
+                fig_dist = create_distance_distribution_plot(stats_result)
+                st.plotly_chart(fig_dist, use_container_width=True)
+                
+                st.markdown("---")
+                st.markdown("#### 统计摘要")
+                
+                col_sum1, col_sum2 = st.columns(2)
+                with col_sum1:
+                    st.metric("分析碎片数量", f"{num_debris_stats} 个")
+                    st.metric("最小接近距离", f"{np.min(stats_result['distances']):.2f} km")
+                with col_sum2:
+                    st.metric("平均接近距离", f"{np.mean(stats_result['distances']):.2f} km")
+                    st.metric("最大接近距离", f"{np.max(stats_result['distances']):.2f} km")
+                
+                final_prob = stats_result['cumulative_probs'][-1]['prob_any_collision']
+                st.metric("30天累积碰撞概率", f"{final_prob:.2e}")
 
 st.markdown("---")
 st.caption("🛰️ 航天器轨道力学分析与变轨仿真工具 | 基于开普勒轨道力学与数值方法")

@@ -1130,3 +1130,257 @@ def create_reentry_window_heatmap(window_result):
     )
     
     return fig
+
+
+def create_b_plane_plot(collision_result, show_sigma_levels=True):
+    fig = go.Figure()
+    
+    b_plane_pos = collision_result['b_plane_pos']
+    cov_b_plane = collision_result['cov_b_plane']
+    collision_radius = collision_result['collision_radius']
+    
+    theta = np.linspace(0, 2 * np.pi, 100)
+    
+    if show_sigma_levels:
+        for sigma, color, dash in [(1, '#2ca02c', 'solid'), 
+                                   (2, '#ff7f0e', 'dash'), 
+                                   (3, '#d62728', 'dot')]:
+            try:
+                eigvals, eigvecs = np.linalg.eigh(cov_b_plane)
+                eigvals = np.maximum(eigvals, 1e-10)
+                
+                a = sigma * np.sqrt(eigvals[0])
+                b = sigma * np.sqrt(eigvals[1])
+                
+                ellipse_x = a * np.cos(theta)
+                ellipse_y = b * np.sin(theta)
+                
+                angle = np.arctan2(eigvecs[1, 0], eigvecs[0, 0])
+                rot_matrix = np.array([
+                    [np.cos(angle), -np.sin(angle)],
+                    [np.sin(angle), np.cos(angle)]
+                ])
+                
+                rotated = rot_matrix @ np.array([ellipse_x, ellipse_y])
+                
+                fig.add_trace(go.Scatter(
+                    x=rotated[0], y=rotated[1],
+                    mode='lines',
+                    line=dict(color=color, width=2, dash=dash),
+                    name=f'{sigma}σ 协方差椭圆',
+                    showlegend=True
+                ))
+            except Exception:
+                pass
+    
+    circle_x = collision_radius * np.cos(theta)
+    circle_y = collision_radius * np.sin(theta)
+    
+    fig.add_trace(go.Scatter(
+        x=circle_x, y=circle_y,
+        mode='lines',
+        line=dict(color='red', width=3),
+        fill='toself',
+        fillcolor='rgba(255, 0, 0, 0.1)',
+        name='碰撞截面'
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=[b_plane_pos[0]],
+        y=[b_plane_pos[1]],
+        mode='markers',
+        marker=dict(size=12, color='blue', symbol='diamond'),
+        name='名义遭遇点'
+    ))
+    
+    max_range = max(collision_radius * 1.5, 
+                    abs(b_plane_pos[0]) * 1.5, 
+                    abs(b_plane_pos[1]) * 1.5,
+                    3 * np.sqrt(max(cov_b_plane[0, 0], cov_b_plane[1, 1])))
+    
+    fig.update_layout(
+        title='B平面交会图',
+        xaxis_title='ξ (km)',
+        yaxis_title='ζ (km)',
+        xaxis=dict(range=[-max_range, max_range], scaleanchor='y', scaleratio=1),
+        yaxis=dict(range=[-max_range, max_range]),
+        width=600,
+        height=600,
+        showlegend=True,
+        legend=dict(x=0.01, y=0.99),
+        shapes=[
+            dict(
+                type='line',
+                x0=-max_range, y0=0, x1=max_range, y1=0,
+                line=dict(color='gray', width=1, dash='dash')
+            ),
+            dict(
+                type='line',
+                x0=0, y0=-max_range, x1=0, y1=max_range,
+                line=dict(color='gray', width=1, dash='dash')
+            )
+        ]
+    )
+    
+    return fig
+
+
+def create_approach_distance_plot(collision_result):
+    approach_data = collision_result['approach_data']
+    
+    times_hours = approach_data['t_coarse'] / 3600
+    
+    fig = go.Figure()
+    
+    fig.add_trace(go.Scatter(
+        x=times_hours,
+        y=approach_data['distances_coarse'],
+        mode='lines',
+        line=dict(color='#1f77b4', width=2),
+        name='相对距离'
+    ))
+    
+    t_ca_hours = collision_result['t_closest'] / 3600
+    min_dist = collision_result['min_distance']
+    
+    fig.add_trace(go.Scatter(
+        x=[t_ca_hours],
+        y=[min_dist],
+        mode='markers',
+        marker=dict(size=12, color='red', symbol='diamond'),
+        name='最近接近点'
+    ))
+    
+    fig.update_layout(
+        title='相对距离随时间变化',
+        xaxis_title='时间 (小时)',
+        yaxis_title='相对距离 (km)',
+        width=800,
+        height=400,
+        showlegend=True,
+        legend=dict(x=0.01, y=0.99)
+    )
+    
+    return fig
+
+
+def create_collision_cumulative_plot(stats_result):
+    windows = [cp['window_days'] for cp in stats_result['cumulative_probs']]
+    probs = [cp['prob_any_collision'] for cp in stats_result['cumulative_probs']]
+    
+    fig = go.Figure()
+    
+    fig.add_trace(go.Scatter(
+        x=windows,
+        y=probs,
+        mode='lines+markers',
+        line=dict(color='#1f77b4', width=3),
+        marker=dict(size=10, color='#1f77b4'),
+        fill='tozeroy',
+        fillcolor='rgba(31, 119, 180, 0.2)',
+        name='累积碰撞概率'
+    ))
+    
+    fig.add_hline(
+        y=1e-4,
+        line_dash="dash",
+        line_color="red",
+        annotation_text="预警阈值 (1e-4)",
+        annotation_position="right"
+    )
+    
+    fig.update_layout(
+        title='碰撞概率随时间累积曲线',
+        xaxis_title='时间窗口 (天)',
+        yaxis_title='至少一次碰撞概率',
+        yaxis_type='log',
+        width=800,
+        height=450,
+        showlegend=True,
+        legend=dict(x=0.01, y=0.99)
+    )
+    
+    return fig
+
+
+def create_distance_distribution_plot(stats_result, num_bins=20):
+    distances = stats_result['distances']
+    
+    fig = go.Figure()
+    
+    fig.add_trace(go.Histogram(
+        x=distances,
+        nbinsx=num_bins,
+        marker_color='#2ca02c',
+        opacity=0.7,
+        name='接近距离分布'
+    ))
+    
+    fig.update_layout(
+        title='最近接近距离分布直方图',
+        xaxis_title='最近接近距离 (km)',
+        yaxis_title='频次',
+        width=800,
+        height=400,
+        showlegend=True,
+        legend=dict(x=0.01, y=0.99),
+        bargap=0.1
+    )
+    
+    return fig
+
+
+def create_batch_screening_table(batch_results, prob_threshold=1e-4):
+    import pandas as pd
+    
+    data = []
+    for result in batch_results:
+        t_ca_hours = result['t_closest'] / 3600
+        prob = result['collision_probability']
+        status = "⚠️ 超过阈值" if result['exceeds_threshold'] else "✓ 安全"
+        
+        row = {
+            '碎片编号': result['debris_id'],
+            '最近接近距离 (km)': f"{result['min_distance']:.3f}",
+            '接近时刻 (小时)': f"{t_ca_hours:.2f}",
+            '碰撞概率': f"{prob:.2e}",
+            '状态': status
+        }
+        
+        if result['exceeds_threshold'] and 'maneuver' in result:
+            man = result['maneuver']
+            if man['success']:
+                row['规避Δv (m/s)'] = f"{man['dv_magnitude'] * 1000:.2f}"
+            else:
+                row['规避Δv (m/s)'] = 'N/A'
+        else:
+            row['规避Δv (m/s)'] = '-'
+        
+        data.append(row)
+    
+    df = pd.DataFrame(data)
+    
+    fig = go.Figure(data=[go.Table(
+        header=dict(
+            values=list(df.columns),
+            fill_color='paleturquoise',
+            align='left',
+            font=dict(size=12, color='black')
+        ),
+        cells=dict(
+            values=[df[col] for col in df.columns],
+            fill_color=[
+                ['lightpink' if '⚠️' in str(s) else 'white' for s in df['状态']]
+            ],
+            align='left',
+            font=dict(size=11)
+        )
+    )])
+    
+    fig.update_layout(
+        title=f'批量碰撞风险筛查结果 (共{len(batch_results)}个目标)',
+        width=900,
+        height=400
+    )
+    
+    return fig
