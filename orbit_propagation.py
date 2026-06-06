@@ -336,3 +336,144 @@ def sun_synchronous_inclination(altitude, e=0):
     inc = brentq(equation, 0.1, np.pi - 0.1)
     
     return np.rad2deg(inc)
+
+
+def estimate_orbit_lifetime(elements, area_mass_ratio, cd=2.2, 
+                          reentry_altitude=120.0, 
+                          max_days=36500):
+    pert = Perturbations(
+        use_j2=False,
+        use_drag=True,
+        use_srp=False,
+        Cd=cd,
+        area_mass_ratio=area_mass_ratio
+    )
+    
+    current_el = KeplerElements(
+        elements.a_km, elements.e, elements.i,
+        elements.raan, elements.argp, elements.nu,
+        units='km_deg'
+    )
+    
+    dt = 86400.0
+    total_days = 0
+    hp_history = [current_el.get_hp()]
+    time_history = [0.0]
+    
+    while total_days < max_days:
+        current_el = propagate_numerical(
+            current_el, 0, dt,
+            dt=600.0,
+            method='rk4',
+            perturbations=pert
+        )
+        
+        total_days += 1
+        hp = current_el.get_hp()
+        hp_history.append(hp)
+        time_history.append(total_days)
+        
+        if hp < reentry_altitude:
+            break
+    
+    return {
+        'lifetime_days': total_days,
+        'time_history': np.array(time_history),
+        'hp_history': np.array(hp_history),
+        'final_elements': current_el
+    }
+
+
+def orbit_station_keeping_analysis(elements, area_mass_ratio,
+                                   maintenance_interval_days=30,
+                                   mission_duration_years=5,
+                                   cd=2.2):
+    pert = Perturbations(
+        use_j2=False,
+        use_drag=True,
+        use_srp=False,
+        Cd=cd,
+        area_mass_ratio=area_mass_ratio
+    )
+    
+    initial_hp = elements.get_hp()
+    initial_a = elements.a_km
+    initial_e = elements.e
+    
+    dt_step = 86400.0
+    maintenance_events = []
+    total_dv = 0.0
+    total_maneuvers = 0
+    
+    current_el = KeplerElements(
+        initial_a, initial_e, elements.i,
+        elements.raan, elements.argp, elements.nu,
+        units='km_deg'
+    )
+    
+    mission_days = mission_duration_years * 365
+    
+    for day in range(1, int(mission_days) + 1):
+        current_el = propagate_numerical(
+            current_el, 0, dt_step,
+            dt=600.0,
+            method='rk4',
+            perturbations=pert
+        )
+        
+        if day % maintenance_interval_days == 0:
+            current_hp = current_el.get_hp()
+            delta_h = initial_hp - current_hp
+            
+            if delta_h > 0:
+                current_rp = current_el.get_rp()
+                target_rp = R_EARTH + initial_hp
+                rp_ratio = target_rp / current_rp
+                
+                v_p = np.sqrt(MU_EARTH / current_el.a_km * (1 + current_el.e) / (1 - current_el.e))
+                dv = v_p * (np.sqrt(rp_ratio) - 1)
+                
+                total_dv += dv
+                total_maneuvers += 1
+                
+                maintenance_events.append({
+                    'day': day,
+                    'delta_h_km': delta_h,
+                    'dv_km_s': dv,
+                    'hp_before_km': current_hp
+                })
+                
+                new_rp = target_rp
+                new_ra = current_el.get_ra()
+                new_a = (new_rp + new_ra) / 2
+                new_e = (new_ra - new_rp) / (new_ra + new_rp)
+                
+                current_el = KeplerElements(
+                    new_a, new_e, current_el.i,
+                    current_el.raan, current_el.argp, current_el.nu,
+                    units='km_deg'
+                )
+    
+    return {
+        'total_dv_km_s': total_dv,
+        'total_maneuvers': total_maneuvers,
+        'maintenance_events': maintenance_events,
+        'mission_days': mission_days,
+        'maintenance_interval_days': maintenance_interval_days
+    }
+
+
+def lifetime_vs_area_mass_ratio(elements, area_mass_ratios=None, cd=2.2):
+    if area_mass_ratios is None:
+        area_mass_ratios = np.logspace(-3, -1, 20)
+    
+    lifetimes = []
+    
+    for amr in area_mass_ratios:
+        result = estimate_orbit_lifetime(elements, amr, cd=cd)
+        lifetimes.append(result['lifetime_days'])
+    
+    return {
+        'area_mass_ratios': area_mass_ratios,
+        'lifetimes_days': np.array(lifetimes)
+    }

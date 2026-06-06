@@ -509,3 +509,207 @@ def create_coverage_by_latitude(total_sats=12, num_planes=3, inclination=55,
     )
     
     return fig
+
+
+def create_orbital_elements_plot(times, elements_list, time_unit='minutes'):
+    from plotly.subplots import make_subplots
+    
+    times = np.array(times)
+    if time_unit == 'minutes':
+        t_display = times / 60
+        xlabel = '时间 (分钟)'
+    elif time_unit == 'hours':
+        t_display = times / 3600
+        xlabel = '时间 (小时)'
+    elif time_unit == 'days':
+        t_display = times / 86400
+        xlabel = '时间 (天)'
+    else:
+        t_display = times
+        xlabel = '时间 (秒)'
+    
+    a_vals = []
+    e_vals = []
+    i_vals = []
+    raan_vals = []
+    argp_vals = []
+    M_vals = []
+    
+    for el in elements_list:
+        a_vals.append(el.a_km)
+        e_vals.append(el.e)
+        i_vals.append(el.i)
+        raan_vals.append(el.raan)
+        argp_vals.append(el.argp)
+        M_vals.append(np.rad2deg(el.get_mean_anomaly()))
+    
+    fig = make_subplots(
+        rows=2, cols=3,
+        subplot_titles=(
+            '半长轴 (km)', '偏心率', '轨道倾角 (°)',
+            '升交点赤经 (°)', '近地点幅角 (°)', '平近点角 (°)'
+        ),
+        horizontal_spacing=0.08,
+        vertical_spacing=0.15
+    )
+    
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
+    
+    fig.add_trace(
+        go.Scatter(x=t_display, y=a_vals, mode='lines', 
+                  line=dict(color=colors[0], width=2), showlegend=False),
+        row=1, col=1
+    )
+    
+    fig.add_trace(
+        go.Scatter(x=t_display, y=e_vals, mode='lines', 
+                  line=dict(color=colors[1], width=2), showlegend=False),
+        row=1, col=2
+    )
+    
+    fig.add_trace(
+        go.Scatter(x=t_display, y=i_vals, mode='lines', 
+                  line=dict(color=colors[2], width=2), showlegend=False),
+        row=1, col=3
+    )
+    
+    fig.add_trace(
+        go.Scatter(x=t_display, y=raan_vals, mode='lines', 
+                  line=dict(color=colors[3], width=2), showlegend=False),
+        row=2, col=1
+    )
+    
+    fig.add_trace(
+        go.Scatter(x=t_display, y=argp_vals, mode='lines', 
+                  line=dict(color=colors[4], width=2), showlegend=False),
+        row=2, col=2
+    )
+    
+    fig.add_trace(
+        go.Scatter(x=t_display, y=M_vals, mode='lines', 
+                  line=dict(color=colors[5], width=2), showlegend=False),
+        row=2, col=3
+    )
+    
+    fig.update_xaxes(title_text=xlabel, row=1, col=1)
+    fig.update_xaxes(title_text=xlabel, row=1, col=2)
+    fig.update_xaxes(title_text=xlabel, row=1, col=3)
+    fig.update_xaxes(title_text=xlabel, row=2, col=1)
+    fig.update_xaxes(title_text=xlabel, row=2, col=2)
+    fig.update_xaxes(title_text=xlabel, row=2, col=3)
+    
+    fig.update_yaxes(title_text='a (km)', row=1, col=1)
+    fig.update_yaxes(title_text='e', row=1, col=2)
+    fig.update_yaxes(title_text='i (°)', row=1, col=3)
+    fig.update_yaxes(title_text='Ω (°)', row=2, col=1)
+    fig.update_yaxes(title_text='ω (°)', row=2, col=2)
+    fig.update_yaxes(title_text='M (°)', row=2, col=3)
+    
+    fig.update_layout(
+        title='轨道六要素随时间演化',
+        height=600,
+        showlegend=False
+    )
+    
+    return fig
+
+
+def create_lifetime_vs_amr_plot(lifetime_data):
+    fig = go.Figure()
+    
+    fig.add_trace(go.Scatter(
+        x=lifetime_data['area_mass_ratios'],
+        y=lifetime_data['lifetimes_days'],
+        mode='lines+markers',
+        line=dict(color='#1f77b4', width=2),
+        marker=dict(size=6, color='#1f77b4'),
+        name='轨道寿命'
+    ))
+    
+    fig.update_layout(
+        title='不同面质比下的轨道寿命对比',
+        xaxis_title='面质比 (m²/kg)',
+        yaxis_title='轨道寿命 (天)',
+        xaxis_type='log',
+        yaxis_type='log',
+        width=800,
+        height=450,
+        showlegend=True,
+        legend=dict(x=0.01, y=0.99)
+    )
+    
+    fig.update_xaxes(
+        showgrid=True,
+        gridcolor='rgba(200, 200, 200, 0.3)'
+    )
+    
+    fig.update_yaxes(
+        showgrid=True,
+        gridcolor='rgba(200, 200, 200, 0.3)'
+    )
+    
+    return fig
+
+
+def create_station_keeping_plot(sk_data):
+    events = sk_data['maintenance_events']
+    
+    if not events:
+        fig = go.Figure()
+        fig.add_annotation(
+            text='无轨道维持事件',
+            xref='paper', yref='paper',
+            x=0.5, y=0.5,
+            showarrow=False,
+            font=dict(size=16)
+        )
+        fig.update_layout(width=800, height=400, title='轨道维持燃料消耗分析')
+        return fig
+    
+    days = [e['day'] for e in events]
+    dvs = [e['dv_km_s'] * 1000 for e in events]
+    delta_hs = [e['delta_h_km'] for e in events]
+    
+    fig = go.Figure()
+    
+    fig.add_trace(go.Bar(
+        x=days,
+        y=dvs,
+        name='单次Δv (m/s)',
+        marker_color='#1f77b4',
+        yaxis='y',
+        opacity=0.7
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=days,
+        y=delta_hs,
+        mode='lines+markers',
+        name='高度下降 (km)',
+        line=dict(color='#ff7f0e', width=2),
+        marker=dict(size=6, color='#ff7f0e'),
+        yaxis='y2'
+    ))
+    
+    fig.update_layout(
+        title=f'轨道维持燃料消耗分析 (每{sk_data["maintenance_interval_days"]}天)',
+        xaxis_title='任务时间 (天)',
+        yaxis=dict(
+            title='单次Δv (m/s)',
+            titlefont=dict(color='#1f77b4'),
+            tickfont=dict(color='#1f77b4')
+        ),
+        yaxis2=dict(
+            title='高度下降 (km)',
+            titlefont=dict(color='#ff7f0e'),
+            tickfont=dict(color='#ff7f0e'),
+            overlaying='y',
+            side='right'
+        ),
+        width=800,
+        height=400,
+        showlegend=True,
+        legend=dict(x=0.01, y=0.99)
+    )
+    
+    return fig

@@ -10,7 +10,9 @@ from orbit_core import (
 from orbit_propagation import (
     Perturbations, propagate_numerical,
     j2_precession_rates, sun_synchronous_inclination,
-    perigee_event, apogee_event, altitude_event
+    perigee_event, apogee_event, altitude_event,
+    estimate_orbit_lifetime, orbit_station_keeping_analysis,
+    lifetime_vs_area_mass_ratio
 )
 from maneuvers import (
     hohmann_transfer, bielliptic_transfer,
@@ -20,7 +22,9 @@ from maneuvers import (
 from visualization import (
     create_3d_orbit_plot, create_ground_track_plot,
     create_velocity_profile, create_maneuver_plot,
-    create_coverage_heatmap, create_coverage_by_latitude
+    create_coverage_heatmap, create_coverage_by_latitude,
+    create_orbital_elements_plot, create_lifetime_vs_amr_plot,
+    create_station_keeping_plot
 )
 from constellation import (
     walker_delta_constellation, get_constellation_orbit_elements,
@@ -422,10 +426,16 @@ elif page == "📡 轨道摄动分析":
     with tab2:
         st.subheader("大气阻力摄动")
         
-        a_drag = st.number_input("初始半长轴 (km)", value=6600.0, min_value=6400.0, step=10.0, key="drag_a")
-        e_drag = st.number_input("初始偏心率", value=0.05, min_value=0.0, max_value=0.5, step=0.01, key="drag_e")
-        area_mass = st.slider("面质比 (m²/kg)", 0.001, 0.1, 0.01, step=0.001)
-        sim_days = st.slider("仿真天数", 1, 365, 30)
+        col_drag1, col_drag2 = st.columns([1, 1])
+        
+        with col_drag1:
+            a_drag = st.number_input("初始半长轴 (km)", value=6600.0, min_value=6400.0, step=10.0, key="drag_a")
+            e_drag = st.number_input("初始偏心率", value=0.05, min_value=0.0, max_value=0.5, step=0.01, key="drag_e")
+            area_mass = st.slider("面质比 (m²/kg)", 0.001, 0.1, 0.01, step=0.001)
+        
+        with col_drag2:
+            sim_days = st.slider("仿真天数", 1, 365, 30)
+            reentry_alt = st.number_input("再入高度阈值 (km)", value=120.0, min_value=80.0, max_value=200.0, step=10.0)
         
         pert_drag = Perturbations(
             use_j2=False,
@@ -461,6 +471,13 @@ elif page == "📡 轨道摄动分析":
                 mode='lines',
                 name='近地点高度 (km)'
             ))
+            fig.add_hline(
+                y=reentry_alt,
+                line_dash="dash",
+                line_color="red",
+                annotation_text=f"再入高度 ({reentry_alt}km)",
+                annotation_position="right"
+            )
             fig.update_layout(
                 title='轨道高度衰减曲线',
                 xaxis_title='时间 (天)',
@@ -489,6 +506,186 @@ elif page == "📡 轨道摄动分析":
             
             if altitudes[-1] < 100:
                 st.warning("⚠️ 轨道已衰减到 100km 以下，航天器将再入大气层")
+        
+        st.markdown("---")
+        st.subheader("🚀 轨道寿命预测")
+        
+        with st.expander("轨道寿命预测参数", expanded=True):
+            col_life1, col_life2 = st.columns([1, 1])
+            with col_life1:
+                life_area_mass = st.number_input(
+                    "面质比 (m²/kg)", 
+                    value=0.01, 
+                    min_value=0.001, 
+                    max_value=0.5, 
+                    step=0.001,
+                    key="life_amr"
+                )
+                cd_life = st.number_input("阻力系数 Cd", value=2.2, min_value=1.0, max_value=4.0, step=0.1)
+            with col_life2:
+                life_reentry_alt = st.number_input(
+                    "再入高度阈值 (km)", 
+                    value=120.0, 
+                    min_value=80.0, 
+                    max_value=200.0, 
+                    step=10.0,
+                    key="life_reentry"
+                )
+        
+        if st.button("计算轨道寿命", key="calc_lifetime"):
+            with st.spinner("正在进行轨道寿命预测..."):
+                lifetime_result = estimate_orbit_lifetime(
+                    elements_drag,
+                    area_mass_ratio=life_area_mass,
+                    cd=cd_life,
+                    reentry_altitude=life_reentry_alt
+                )
+                
+                col_res1, col_res2, col_res3 = st.columns(3)
+                with col_res1:
+                    st.metric(
+                        "预估轨道寿命",
+                        f"{lifetime_result['lifetime_days']:.0f} 天",
+                        delta=f"{lifetime_result['lifetime_days']/365:.1f} 年"
+                    )
+                with col_res2:
+                    st.metric(
+                        "初始近地点高度",
+                        f"{elements_drag.get_hp():.1f} km"
+                    )
+                with col_res3:
+                    st.metric(
+                        "最终近地点高度",
+                        f"{lifetime_result['hp_history'][-1]:.1f} km"
+                    )
+                
+                fig_life = go.Figure()
+                fig_life.add_trace(go.Scatter(
+                    x=lifetime_result['time_history'],
+                    y=lifetime_result['hp_history'],
+                    mode='lines',
+                    name='近地点高度',
+                    line=dict(color='#1f77b4', width=2)
+                ))
+                fig_life.add_hline(
+                    y=life_reentry_alt,
+                    line_dash="dash",
+                    line_color="red",
+                    annotation_text=f"再入高度 ({life_reentry_alt}km)",
+                    annotation_position="right"
+                )
+                fig_life.add_vline(
+                    x=lifetime_result['lifetime_days'],
+                    line_dash="dash",
+                    line_color="green",
+                    annotation_text=f"寿命终点: {lifetime_result['lifetime_days']:.0f}天",
+                    annotation_position="top"
+                )
+                fig_life.update_layout(
+                    title='轨道寿命衰减曲线',
+                    xaxis_title='时间 (天)',
+                    yaxis_title='近地点高度 (km)',
+                    width=800,
+                    height=400
+                )
+                st.plotly_chart(fig_life, use_container_width=True)
+        
+        st.markdown("---")
+        st.subheader("⚡ 轨道维持燃料消耗分析")
+        
+        with st.expander("轨道维持参数", expanded=True):
+            col_sk1, col_sk2 = st.columns([1, 1])
+            with col_sk1:
+                sk_interval = st.number_input(
+                    "轨道维持间隔 (天)", 
+                    value=30, 
+                    min_value=7, 
+                    max_value=180, 
+                    step=7,
+                    key="sk_interval"
+                )
+                sk_area_mass = st.number_input(
+                    "面质比 (m²/kg)", 
+                    value=0.01, 
+                    min_value=0.001, 
+                    max_value=0.5, 
+                    step=0.001,
+                    key="sk_amr"
+                )
+            with col_sk2:
+                sk_mission_years = st.number_input(
+                    "任务周期 (年)", 
+                    value=5.0, 
+                    min_value=0.5, 
+                    max_value=30.0, 
+                    step=0.5,
+                    key="sk_mission"
+                )
+        
+        if st.button("计算轨道维持燃料消耗", key="calc_sk"):
+            with st.spinner("正在计算轨道维持燃料消耗..."):
+                sk_result = orbit_station_keeping_analysis(
+                    elements_drag,
+                    area_mass_ratio=sk_area_mass,
+                    maintenance_interval_days=sk_interval,
+                    mission_duration_years=sk_mission_years
+                )
+                
+                col_sk_res1, col_sk_res2, col_sk_res3 = st.columns(3)
+                with col_sk_res1:
+                    st.metric(
+                        "总Δv消耗",
+                        f"{sk_result['total_dv_km_s'] * 1000:.1f} m/s",
+                        delta=f"{sk_result['total_dv_km_s']:.4f} km/s"
+                    )
+                with col_sk_res2:
+                    st.metric(
+                        "维持机动次数",
+                        f"{sk_result['total_maneuvers']} 次"
+                    )
+                with col_sk_res3:
+                    avg_dv = (sk_result['total_dv_km_s'] * 1000 / max(1, sk_result['total_maneuvers'])) if sk_result['total_maneuvers'] > 0 else 0
+                    st.metric(
+                        "平均单次Δv",
+                        f"{avg_dv:.2f} m/s"
+                    )
+                
+                fig_sk = create_station_keeping_plot(sk_result)
+                st.plotly_chart(fig_sk, use_container_width=True)
+                
+                if sk_result['maintenance_events']:
+                    st.markdown("#### 轨道维持事件详情")
+                    events_df = pd.DataFrame(sk_result['maintenance_events'])
+                    events_df['dv_m_s'] = events_df['dv_km_s'] * 1000
+                    events_df_display = events_df[['day', 'delta_h_km', 'dv_m_s', 'hp_before_km']].rename(columns={
+                        'day': '任务天数',
+                        'delta_h_km': '高度下降 (km)',
+                        'dv_m_s': 'Δv (m/s)',
+                        'hp_before_km': '维持前近地点高度 (km)'
+                    })
+                    st.dataframe(events_df_display, use_container_width=True)
+        
+        st.markdown("---")
+        st.subheader("📊 不同面质比下的寿命对比")
+        
+        if st.button("生成寿命对比图", key="gen_lifetime_comparison"):
+            with st.spinner("正在计算不同面质比下的寿命..."):
+                amr_values = np.logspace(-3, -1, 15)
+                lifetime_comp = lifetime_vs_area_mass_ratio(
+                    elements_drag,
+                    area_mass_ratios=amr_values,
+                    cd=cd_life if 'cd_life' in locals() else 2.2
+                )
+                
+                fig_comp = create_lifetime_vs_amr_plot(lifetime_comp)
+                st.plotly_chart(fig_comp, use_container_width=True)
+                
+                comp_df = pd.DataFrame({
+                    '面质比 (m²/kg)': lifetime_comp['area_mass_ratios'],
+                    '轨道寿命 (天)': lifetime_comp['lifetimes_days'],
+                    '轨道寿命 (年)': lifetime_comp['lifetimes_days'] / 365
+                })
+                st.dataframe(comp_df, use_container_width=True)
     
     with tab3:
         st.subheader("太阳同步轨道设计")
@@ -704,6 +901,28 @@ elif page == "🔢 数值积分传播":
         f"最终高度: {altitudes[-1]:.1f} km | "
         f"高度变化: {altitudes[-1] - altitudes[0]:.2f} km"
     )
+    
+    st.markdown("---")
+    st.subheader("轨道六要素随时间演化")
+    
+    with st.spinner("正在计算轨道要素..."):
+        elements_list = []
+        for state in states:
+            r = state[:3]
+            v = state[3:]
+            el = rv_to_kepler(r, v, units='km_deg')
+            elements_list.append(el)
+        
+        time_unit = 'minutes'
+        if duration_min >= 1440:
+            time_unit = 'days'
+        elif duration_min >= 60:
+            time_unit = 'hours'
+        
+        fig_elements = create_orbital_elements_plot(
+            times, elements_list, time_unit=time_unit
+        )
+        st.plotly_chart(fig_elements, use_container_width=True)
 
 elif page == "⚡ 机动优化":
     st.header("机动优化")
