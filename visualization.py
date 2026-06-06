@@ -1437,39 +1437,53 @@ def create_probability_evolution_plot(evolution_result, prob_threshold=1e-4):
     return fig
 
 
-def create_sparkline(probabilities, width=50, height=20, line_color='#1f77b4'):
-    x = list(range(len(probabilities)))
+def create_sparkline(probabilities, width=80, height=25, line_color='#1f77b4'):
+    if len(probabilities) < 2:
+        probabilities = [probabilities[0], probabilities[0]] if len(probabilities) == 1 else [0, 0]
     
-    fig = go.Figure()
+    probs = np.array(probabilities)
+    min_p = np.min(probs)
+    max_p = np.max(probs)
     
-    fig.add_trace(go.Scatter(
-        x=x,
-        y=probabilities,
-        mode='lines',
-        line=dict(color=line_color, width=1),
-        showlegend=False,
-        hoverinfo='none'
-    ))
+    if max_p == min_p:
+        max_p = min_p * 1.1 if min_p > 0 else 1.0
+        min_p = min_p * 0.9 if min_p > 0 else 0.0
     
-    fig.update_layout(
-        width=width,
-        height=height,
-        margin=dict(l=0, r=0, t=0, b=0),
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)',
-        xaxis=dict(
-            visible=False,
-            showgrid=False,
-            zeroline=False
-        ),
-        yaxis=dict(
-            visible=False,
-            showgrid=False,
-            zeroline=False
-        )
-    )
+    padding = 2
+    graph_width = width - 2 * padding
+    graph_height = height - 2 * padding
     
-    return fig
+    points = []
+    for i, p in enumerate(probs):
+        x = padding + (i / (len(probs) - 1)) * graph_width
+        y = height - padding - ((p - min_p) / (max_p - min_p)) * graph_height
+        points.append(f"{x:.1f},{y:.1f}")
+    
+    polyline_points = " ".join(points)
+    
+    is_rising = probs[-1] > probs[0]
+    color = '#d62728' if is_rising else '#2ca02c'
+    
+    svg = f'''
+    <svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg">
+        <polyline 
+            points="{polyline_points}" 
+            fill="none" 
+            stroke="{color}" 
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+        />
+    </svg>
+    '''
+    
+    return svg
+
+
+def sparkline_to_data_uri(svg_str):
+    import base64
+    svg_encoded = base64.b64encode(svg_str.encode('utf-8')).decode('utf-8')
+    return f"data:image/svg+xml;base64,{svg_encoded}"
 
 
 def create_maneuver_comparison_plot(evolution_before, evolution_after, prob_threshold=1e-4):

@@ -1880,8 +1880,8 @@ elif page == "☄️ 碰撞风险评估":
                     cols[4].markdown(f"<span style='color:{status_color}'>{status}</span>", unsafe_allow_html=True)
                     
                     if 'probability_trend' in result:
-                        spark_fig = create_sparkline(result['probability_trend'])
-                        cols[5].plotly_chart(spark_fig, use_container_width=True, config={'displayModeBar': False})
+                        spark_svg = create_sparkline(result['probability_trend'])
+                        cols[5].markdown(spark_svg, unsafe_allow_html=True)
                     else:
                         cols[5].write("-")
                     
