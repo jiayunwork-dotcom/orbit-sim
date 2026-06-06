@@ -713,3 +713,257 @@ def create_station_keeping_plot(sk_data):
     )
     
     return fig
+
+
+def create_reentry_altitude_velocity_plot(results_ballistic, results_lifting):
+    fig = go.Figure()
+    
+    fig.add_trace(go.Scatter(
+        x=results_ballistic['velocities'],
+        y=results_ballistic['altitudes'],
+        mode='lines',
+        line=dict(color='#d62728', width=2),
+        name='弹道再入'
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=results_lifting['velocities'],
+        y=results_lifting['altitudes'],
+        mode='lines',
+        line=dict(color='#1f77b4', width=2),
+        name='升力再入'
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=[results_ballistic['velocities'][np.argmax(results_ballistic['heat_fluxes'])]],
+        y=[results_ballistic['altitudes'][np.argmax(results_ballistic['heat_fluxes'])]],
+        mode='markers',
+        marker=dict(size=12, color='red', symbol='diamond'),
+        name='弹道-最大热流点'
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=[results_ballistic['velocities'][np.argmax(results_ballistic['overloads'])]],
+        y=[results_ballistic['altitudes'][np.argmax(results_ballistic['overloads'])]],
+        mode='markers',
+        marker=dict(size=12, color='orange', symbol='triangle-up'),
+        name='弹道-最大过载点'
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=[results_lifting['velocities'][np.argmax(results_lifting['heat_fluxes'])]],
+        y=[results_lifting['altitudes'][np.argmax(results_lifting['heat_fluxes'])]],
+        mode='markers',
+        marker=dict(size=12, color='darkblue', symbol='diamond'),
+        name='升力-最大热流点'
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=[results_lifting['velocities'][np.argmax(results_lifting['overloads'])]],
+        y=[results_lifting['altitudes'][np.argmax(results_lifting['overloads'])]],
+        mode='markers',
+        marker=dict(size=12, color='cyan', symbol='triangle-up'),
+        name='升力-最大过载点'
+    ))
+    
+    fig.update_layout(
+        title='再入轨迹 - 高度-速度曲线',
+        xaxis_title='速度 (km/s)',
+        yaxis_title='高度 (km)',
+        width=800,
+        height=500,
+        showlegend=True,
+        legend=dict(x=0.01, y=0.99)
+    )
+    
+    fig.update_xaxes(autorange='reversed')
+    
+    return fig
+
+
+def create_reentry_altitude_time_plot(results_ballistic, results_lifting):
+    fig = go.Figure()
+    
+    fig.add_trace(go.Scatter(
+        x=results_ballistic['times'],
+        y=results_ballistic['altitudes'],
+        mode='lines',
+        line=dict(color='#d62728', width=2),
+        name='弹道再入'
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=results_lifting['times'],
+        y=results_lifting['altitudes'],
+        mode='lines',
+        line=dict(color='#1f77b4', width=2),
+        name='升力再入'
+    ))
+    
+    fig.update_layout(
+        title='再入轨迹 - 高度-时间曲线',
+        xaxis_title='时间 (s)',
+        yaxis_title='高度 (km)',
+        width=800,
+        height=400,
+        showlegend=True,
+        legend=dict(x=0.01, y=0.99)
+    )
+    
+    return fig
+
+
+def create_reentry_heat_flux_plot(results_ballistic, results_lifting, ablation_threshold=1e5):
+    fig = go.Figure()
+    
+    fig.add_trace(go.Scatter(
+        x=results_ballistic['times'],
+        y=results_ballistic['heat_fluxes'],
+        mode='lines',
+        line=dict(color='#d62728', width=2),
+        name='弹道再入'
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=results_lifting['times'],
+        y=results_lifting['heat_fluxes'],
+        mode='lines',
+        line=dict(color='#1f77b4', width=2),
+        name='升力再入'
+    ))
+    
+    fig.add_hline(
+        y=ablation_threshold,
+        line_dash="dash",
+        line_color="green",
+        annotation_text=f"烧蚀阈值 ({ablation_threshold:.0f} W/m²)",
+        annotation_position="right"
+    )
+    
+    fig.update_layout(
+        title='热流密度-时间曲线',
+        xaxis_title='时间 (s)',
+        yaxis_title='热流密度 (W/m²)',
+        width=800,
+        height=400,
+        showlegend=True,
+        legend=dict(x=0.01, y=0.99)
+    )
+    
+    return fig
+
+
+def create_reentry_overload_plot(results_ballistic, results_lifting):
+    fig = go.Figure()
+    
+    fig.add_trace(go.Scatter(
+        x=results_ballistic['times'],
+        y=results_ballistic['overloads'],
+        mode='lines',
+        line=dict(color='#d62728', width=2),
+        name='弹道再入'
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=results_lifting['times'],
+        y=results_lifting['overloads'],
+        mode='lines',
+        line=dict(color='#1f77b4', width=2),
+        name='升力再入'
+    ))
+    
+    fig.update_layout(
+        title='过载-时间曲线',
+        xaxis_title='时间 (s)',
+        yaxis_title='过载 (g)',
+        width=800,
+        height=400,
+        showlegend=True,
+        legend=dict(x=0.01, y=0.99)
+    )
+    
+    return fig
+
+
+def create_reentry_ground_track_plot(results_ballistic, results_lifting):
+    fig = go.Figure()
+    
+    lons_b = results_ballistic['longitudes'].copy()
+    for i in range(1, len(lons_b)):
+        if abs(lons_b[i] - lons_b[i-1]) > 180:
+            lons_b[i] = np.nan
+    
+    lons_l = results_lifting['longitudes'].copy()
+    for i in range(1, len(lons_l)):
+        if abs(lons_l[i] - lons_l[i-1]) > 180:
+            lons_l[i] = np.nan
+    
+    fig.add_trace(go.Scatter(
+        x=lons_b,
+        y=results_ballistic['latitudes'],
+        mode='lines',
+        line=dict(color='#d62728', width=2),
+        name='弹道再入'
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=[results_ballistic['longitudes'][0]],
+        y=[results_ballistic['latitudes'][0]],
+        mode='markers',
+        marker=dict(size=10, color='red', symbol='circle'),
+        name='弹道-再入点'
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=[results_ballistic['impact_longitude']],
+        y=[results_ballistic['impact_latitude']],
+        mode='markers',
+        marker=dict(size=10, color='darkred', symbol='x'),
+        name='弹道-落点'
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=lons_l,
+        y=results_lifting['latitudes'],
+        mode='lines',
+        line=dict(color='#1f77b4', width=2),
+        name='升力再入'
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=[results_lifting['longitudes'][0]],
+        y=[results_lifting['latitudes'][0]],
+        mode='markers',
+        marker=dict(size=10, color='blue', symbol='circle'),
+        name='升力-再入点'
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=[results_lifting['impact_longitude']],
+        y=[results_lifting['impact_latitude']],
+        mode='markers',
+        marker=dict(size=10, color='darkblue', symbol='x'),
+        name='升力-落点'
+    ))
+    
+    lat_lines = [-60, -30, 0, 30, 60]
+    for lat in lat_lines:
+        fig.add_hline(y=lat, line_dash="dash", line_color="gray", opacity=0.5)
+    
+    lon_lines = [-180, -120, -60, 0, 60, 120, 180]
+    for lon in lon_lines:
+        fig.add_vline(x=lon, line_dash="dash", line_color="gray", opacity=0.5)
+    
+    fig.update_layout(
+        title='再入地面轨迹投影',
+        xaxis_title='经度 (°)',
+        yaxis_title='纬度 (°)',
+        xaxis=dict(range=[-180, 180], dtick=30),
+        yaxis=dict(range=[-90, 90], dtick=30),
+        width=850,
+        height=500,
+        showlegend=True,
+        legend=dict(x=0.01, y=0.99)
+    )
+    
+    return fig

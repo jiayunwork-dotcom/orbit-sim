@@ -24,7 +24,16 @@ from visualization import (
     create_velocity_profile, create_maneuver_plot,
     create_coverage_heatmap, create_coverage_by_latitude,
     create_orbital_elements_plot, create_lifetime_vs_amr_plot,
-    create_station_keeping_plot
+    create_station_keeping_plot,
+    create_reentry_altitude_velocity_plot,
+    create_reentry_altitude_time_plot,
+    create_reentry_heat_flux_plot,
+    create_reentry_overload_plot,
+    create_reentry_ground_track_plot
+)
+from reentry import (
+    ReentryVehicle, ReentryInitialConditions,
+    simulate_both_modes, standard_atmosphere_1976
 )
 from constellation import (
     walker_delta_constellation, get_constellation_orbit_elements,
@@ -55,7 +64,8 @@ with st.sidebar:
             "📡 轨道摄动分析",
             "✨ 星座设计与覆盖",
             "🔢 数值积分传播",
-            "⚡ 机动优化"
+            "⚡ 机动优化",
+            "🔥 再入轨迹分析"
         ]
     )
     st.markdown("---")
@@ -1010,6 +1020,238 @@ elif page == "⚡ 机动优化":
                         st.warning(f"优化未收敛: {mp_result['message']}")
                 except Exception as ex:
                     st.error(f"优化失败: {str(ex)}")
+
+elif page == "🔥 再入轨迹分析":
+    st.header("🔥 航天器再入大气层轨迹分析")
+    
+    st.markdown("""
+    本模块实现完整的再入大气层轨迹数值模拟，考虑气动加热、气动力和质量损失的耦合效应，
+    支持弹道再入和升力再入两种模式的对比分析。
+    """)
+    
+    tab1, tab2, tab3 = st.tabs(["参数设置", "仿真结果", "大气模型验证"])
+    
+    with tab1:
+        st.subheader("再入初始条件")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            alt_reentry = st.number_input("再入高度 (km)", value=120.0, min_value=80.0, max_value=200.0, step=5.0)
+            vel_reentry = st.number_input("再入速度 (km/s)", value=7.8, min_value=5.0, max_value=12.0, step=0.1)
+            gamma_reentry = st.number_input("飞行路径角 (°)", value=-3.0, min_value=-8.0, max_value=0.0, step=0.5)
+        
+        with col2:
+            chi_reentry = st.number_input("航向角 (°)", value=0.0, min_value=-180.0, max_value=180.0, step=5.0)
+            lat_reentry = st.number_input("初始纬度 (°)", value=0.0, min_value=-90.0, max_value=90.0, step=5.0)
+            lon_reentry = st.number_input("初始经度 (°)", value=0.0, min_value=-180.0, max_value=180.0, step=5.0)
+        
+        with col3:
+            st.info("💡 典型值: 高度120km, 速度7.8km/s, 路径角-3°到-5°")
+        
+        st.markdown("---")
+        st.subheader("航天器物理参数")
+        
+        col4, col5, col6 = st.columns(3)
+        
+        with col4:
+            mass_vehicle = st.number_input("质量 (kg)", value=1000.0, min_value=100.0, max_value=10000.0, step=100.0)
+            ref_area = st.number_input("参考面积 (m²)", value=1.0, min_value=0.1, max_value=20.0, step=0.1)
+            nose_radius = st.number_input("鼻锥半径 (m)", value=0.1, min_value=0.01, max_value=1.0, step=0.05)
+        
+        with col5:
+            ablation_threshold = st.number_input("烧蚀阈值温度 (K)", value=1500.0, min_value=800.0, max_value=3000.0, step=100.0)
+            Cd0 = st.number_input("零攻角阻力系数 Cd0", value=0.05, min_value=0.01, max_value=0.5, step=0.01)
+            CL_alpha = st.number_input("升力系数导数 (1/°)", value=0.05, min_value=0.01, max_value=0.2, step=0.01)
+        
+        with col6:
+            alpha_max_LD = st.number_input("最大升阻比对应攻角 (°)", value=10.0, min_value=0.0, max_value=30.0, step=1.0)
+            alpha_lifting = st.number_input("升力再入攻角 (°)", value=5.0, min_value=0.0, max_value=30.0, step=1.0)
+            bank_angle = st.number_input("倾斜角 (°)", value=30.0, min_value=-90.0, max_value=90.0, step=5.0)
+        
+        st.markdown("---")
+        
+        if st.button("开始再入仿真", key="run_reentry_sim", type="primary"):
+            with st.spinner("正在进行再入轨迹仿真..."):
+                try:
+                    vehicle = ReentryVehicle(
+                        mass=mass_vehicle,
+                        reference_area=ref_area,
+                        nose_radius=nose_radius,
+                        ablation_threshold=ablation_threshold,
+                        Cd0=Cd0,
+                        CL_alpha=CL_alpha,
+                        alpha_max_LD=alpha_max_LD
+                    )
+                    
+                    init_cond = ReentryInitialConditions(
+                        altitude=alt_reentry,
+                        velocity=vel_reentry,
+                        flight_path_angle=gamma_reentry,
+                        heading_angle=chi_reentry,
+                        latitude=lat_reentry,
+                        longitude=lon_reentry
+                    )
+                    
+                    results_ballistic, results_lifting = simulate_both_modes(
+                        vehicle, init_cond,
+                        alpha_lifting=alpha_lifting,
+                        bank_angle=bank_angle
+                    )
+                    
+                    st.session_state['reentry_results_ballistic'] = results_ballistic
+                    st.session_state['reentry_results_lifting'] = results_lifting
+                    st.session_state['reentry_sim_done'] = True
+                    
+                    st.success("仿真完成! 请查看 '仿真结果' 标签页")
+                except Exception as ex:
+                    st.error(f"仿真失败: {str(ex)}")
+                    st.session_state['reentry_sim_done'] = False
+    
+    with tab2:
+        if not st.session_state.get('reentry_sim_done', False):
+            st.info("请先在 '参数设置' 标签页中运行仿真")
+        else:
+            results_b = st.session_state['reentry_results_ballistic']
+            results_l = st.session_state['reentry_results_lifting']
+            
+            st.subheader("关键参数汇总")
+            
+            col_sum1, col_sum2 = st.columns(2)
+            
+            with col_sum1:
+                st.markdown("#### 🔴 弹道再入")
+                st.metric("最大热流", f"{results_b['max_heat_flux']:.2e} W/m²", 
+                         f"t={results_b['max_heat_flux_time']:.1f}s, h={results_b['max_heat_flux_alt']:.1f}km")
+                st.metric("最大过载", f"{results_b['max_overload']:.2f} g", 
+                         f"t={results_b['max_overload_time']:.1f}s, h={results_b['max_overload_alt']:.1f}km")
+                if results_b['ablation_start_time'] is not None:
+                    st.metric("烧蚀开始时刻", f"{results_b['ablation_start_time']:.1f} s", 
+                             f"h={results_b['ablation_start_alt']:.1f}km")
+                else:
+                    st.metric("烧蚀开始时刻", "未达到阈值")
+                st.metric("落点纬度", f"{results_b['impact_latitude']:.2f}°")
+                st.metric("落点经度", f"{results_b['impact_longitude']:.2f}°")
+                st.metric("总飞行时间", f"{results_b['total_time']:.1f} s")
+                st.metric("质量损失", f"{results_b['mass_loss']:.2f} kg")
+            
+            with col_sum2:
+                st.markdown("#### 🔵 升力再入")
+                st.metric("最大热流", f"{results_l['max_heat_flux']:.2e} W/m²", 
+                         f"t={results_l['max_heat_flux_time']:.1f}s, h={results_l['max_heat_flux_alt']:.1f}km")
+                st.metric("最大过载", f"{results_l['max_overload']:.2f} g", 
+                         f"t={results_l['max_overload_time']:.1f}s, h={results_l['max_overload_alt']:.1f}km")
+                if results_l['ablation_start_time'] is not None:
+                    st.metric("烧蚀开始时刻", f"{results_l['ablation_start_time']:.1f} s", 
+                             f"h={results_l['ablation_start_alt']:.1f}km")
+                else:
+                    st.metric("烧蚀开始时刻", "未达到阈值")
+                st.metric("落点纬度", f"{results_l['impact_latitude']:.2f}°")
+                st.metric("落点经度", f"{results_l['impact_longitude']:.2f}°")
+                st.metric("总飞行时间", f"{results_l['total_time']:.1f} s")
+                st.metric("质量损失", f"{results_l['mass_loss']:.2f} kg")
+            
+            st.markdown("---")
+            
+            tab_res1, tab_res2, tab_res3 = st.tabs(["轨迹曲线", "热流与过载", "地面轨迹"])
+            
+            with tab_res1:
+                st.subheader("高度-速度曲线")
+                fig1 = create_reentry_altitude_velocity_plot(results_b, results_l)
+                st.plotly_chart(fig1, use_container_width=True)
+                
+                st.markdown("""
+                **说明:**
+                - 弹道再入（红色）：快速下降，高速度下进入稠密大气层，热流和过载峰值较高
+                - 升力再入（蓝色）：利用升力拉平轨迹，减速更平缓，热流和过载峰值较低
+                """)
+                
+                st.subheader("高度-时间曲线")
+                fig2 = create_reentry_altitude_time_plot(results_b, results_l)
+                st.plotly_chart(fig2, use_container_width=True)
+            
+            with tab_res2:
+                st.subheader("热流密度-时间曲线")
+                fig3 = create_reentry_heat_flux_plot(results_b, results_l, 1e5)
+                st.plotly_chart(fig3, use_container_width=True)
+                
+                st.markdown("""
+                **说明:**
+                - 驻点热流密度与速度三次方和大气密度平方根成正比
+                - 绿色虚线为烧蚀阈值参考线
+                - 升力再入通过拉平轨迹延长热流作用时间，但降低峰值热流
+                """)
+                
+                st.subheader("过载-时间曲线")
+                fig4 = create_reentry_overload_plot(results_b, results_l)
+                st.plotly_chart(fig4, use_container_width=True)
+                
+                st.markdown("""
+                **说明:**
+                - 弹道再入过载峰值通常较高（可达8-12g）
+                - 升力再入可将过载控制在4-6g范围内，更适合载人航天
+                """)
+            
+            with tab_res3:
+                st.subheader("地面轨迹投影")
+                fig5 = create_reentry_ground_track_plot(results_b, results_l)
+                st.plotly_chart(fig5, use_container_width=True)
+                
+                st.markdown("""
+                **说明:**
+                - 圆形标记为再入点，X形标记为落点
+                - 升力再入通过倾斜角调节可实现横向机动，改变落点位置
+                - 弹道再入主要沿初始航向飞行，机动能力有限
+                """)
+    
+    with tab3:
+        st.subheader("1976标准大气模型验证")
+        
+        st.markdown("""
+        本模块使用1976标准大气模型，按高度分段计算温度、压强和密度：
+        - 120km ~ 86km：热层模型
+        - 86km ~ 47km：平流层顶模型
+        - 47km 以下：按标准对流层和平流层分段计算
+        """)
+        
+        alt_test = st.slider("选择高度 (km)", 0.0, 120.0, 50.0, step=1.0)
+        rho, T, p = standard_atmosphere_1976(alt_test)
+        
+        col_atm1, col_atm2, col_atm3 = st.columns(3)
+        with col_atm1:
+            st.metric("温度", f"{T:.2f} K")
+        with col_atm2:
+            st.metric("压强", f"{p:.4f} kPa")
+        with col_atm3:
+            st.metric("密度", f"{rho:.4e} kg/m³")
+        
+        altitudes = np.linspace(0, 120, 200)
+        temps = []
+        pressures = []
+        densities = []
+        
+        for alt in altitudes:
+            rho, T, p = standard_atmosphere_1976(alt)
+            temps.append(T)
+            pressures.append(p)
+            densities.append(rho)
+        
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
+        
+        fig_atm = make_subplots(rows=1, cols=3, subplot_titles=('温度 (K)', '压强 (kPa)', '密度 (kg/m³)'))
+        
+        fig_atm.add_trace(go.Scatter(x=temps, y=altitudes, mode='lines', line=dict(color='red'), showlegend=False), row=1, col=1)
+        fig_atm.add_trace(go.Scatter(x=pressures, y=altitudes, mode='lines', line=dict(color='blue'), showlegend=False), row=1, col=2)
+        fig_atm.add_trace(go.Scatter(x=densities, y=altitudes, mode='lines', line=dict(color='green'), showlegend=False), row=1, col=3)
+        
+        fig_atm.update_xaxes(title_text='T (K)', row=1, col=1)
+        fig_atm.update_xaxes(title_text='P (kPa)', type='log', row=1, col=2)
+        fig_atm.update_xaxes(title_text='ρ (kg/m³)', type='log', row=1, col=3)
+        fig_atm.update_yaxes(title_text='高度 (km)', row=1, col=1)
+        
+        fig_atm.update_layout(height=400, width=900, title='1976标准大气模型')
+        st.plotly_chart(fig_atm, use_container_width=True)
 
 st.markdown("---")
 st.caption("🛰️ 航天器轨道力学分析与变轨仿真工具 | 基于开普勒轨道力学与数值方法")
