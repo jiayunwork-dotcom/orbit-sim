@@ -387,3 +387,393 @@ def simulate_both_modes(vehicle, initial_conditions, alpha_lifting=5.0, bank_ang
     )
     
     return results_ballistic, results_lifting
+
+
+def debris_equations(t, state, Cd, area_mass_ratio):
+    r, lon, lat, v, gamma, chi = state
+    
+    altitude = r - R_EARTH
+    altitude_clamped = np.clip(altitude, 0, 120)
+    
+    rho, T_atm, p = standard_atmosphere_1976(altitude_clamped)
+    
+    M = mach_number(v * 1000, T_atm)
+    
+    if M < 1.0:
+        Cd_eff = Cd
+    elif M < 5.0:
+        Cd_eff = Cd * (1.0 + 0.1 * (M - 1.0))
+    else:
+        Cd_eff = Cd * 1.4
+    
+    gamma_rad = np.deg2rad(gamma)
+    chi_rad = np.deg2rad(chi)
+    lat_rad = np.deg2rad(lat)
+    
+    g = MU_EARTH / (r ** 2)
+    
+    q_dyn = 0.5 * rho * (v * 1000) ** 2
+    D = q_dyn * Cd_eff * area_mass_ratio
+    D_km = D / 1000.0
+    
+    dr_dt = v * np.sin(gamma_rad)
+    dlon_dt = (v * np.cos(gamma_rad) * np.sin(chi_rad)) / (r * np.cos(lat_rad))
+    dlat_dt = (v * np.cos(gamma_rad) * np.cos(chi_rad)) / r
+    
+    omega = OMEGA_EARTH
+    a_coriolis_1 = -2 * omega * v * np.cos(gamma_rad) * np.sin(chi_rad) * np.sin(lat_rad)
+    a_cent_1 = omega ** 2 * r * np.cos(lat_rad) ** 2 * np.sin(gamma_rad)
+    
+    dv_dt = -D_km - g * np.sin(gamma_rad) + a_coriolis_1 + a_cent_1
+    
+    a_coriolis_2 = 2 * omega * v * np.cos(gamma_rad) * np.cos(chi_rad) * np.sin(lat_rad)
+    a_cent_2 = omega ** 2 * r * np.cos(lat_rad) * np.sin(lat_rad) * np.cos(gamma_rad) * np.cos(chi_rad)
+    
+    dgamma_dt = (-g * np.cos(gamma_rad) / v + 
+                 v * np.cos(gamma_rad) / r + 
+                 a_coriolis_2 / v + a_cent_2 / v)
+    
+    a_coriolis_3 = 2 * omega * v * np.cos(gamma_rad) * np.sin(chi_rad) * np.cos(lat_rad)
+    a_cent_3 = -omega ** 2 * r * np.cos(lat_rad) * np.sin(lat_rad) * np.cos(gamma_rad) * np.sin(chi_rad)
+    
+    dchi_dt = (v * np.cos(gamma_rad) * np.sin(chi_rad) * np.tan(lat_rad) / r +
+               a_coriolis_3 / (v * np.cos(gamma_rad)) + a_cent_3 / (v * np.cos(gamma_rad)))
+    
+    lon_deg = np.rad2deg(dlon_dt)
+    lat_deg = np.rad2deg(dlat_dt)
+    gamma_deg = np.rad2deg(dgamma_dt)
+    chi_deg = np.rad2deg(dchi_dt)
+    
+    return [dr_dt, lon_deg, lat_deg, dv_dt, gamma_deg, chi_deg]
+
+
+def simulate_debris(breakup_state, Cd=1.2, area_mass_ratio=0.01, t_max=2000.0, dt_eval=1.0, rtol=1e-6, atol=1e-8):
+    r0, lon0, lat0, v0, gamma0, chi0 = breakup_state
+    
+    state0 = [r0, lon0, lat0, v0, gamma0, chi0]
+    
+    def event_impact(t, state):
+        return state[0] - R_EARTH - 0.01
+    
+    event_impact.terminal = True
+    event_impact.direction = -1
+    
+    t_eval = np.arange(0, t_max, dt_eval)
+    
+    sol = solve_ivp(
+        debris_equations,
+        [0, t_max],
+        state0,
+        args=(Cd, area_mass_ratio),
+        method='RK45',
+        t_eval=t_eval,
+        events=event_impact,
+        rtol=rtol,
+        atol=atol
+    )
+    
+    if not sol.success:
+        return None
+    
+    times = sol.t
+    states = sol.y.T
+    
+    r_vals = states[:, 0]
+    lon_vals = states[:, 1]
+    lat_vals = states[:, 2]
+    v_vals = states[:, 3]
+    gamma_vals = states[:, 4]
+    chi_vals = states[:, 5]
+    
+    altitudes = r_vals - R_EARTH
+    
+    result = {
+        'times': times,
+        'altitudes': altitudes,
+        'velocities': v_vals,
+        'longitudes': lon_vals,
+        'latitudes': lat_vals,
+        'flight_path_angles': gamma_vals,
+        'heading_angles': chi_vals,
+        'impact_longitude': lon_vals[-1],
+        'impact_latitude': lat_vals[-1],
+        'total_time': times[-1]
+    }
+    
+    return result
+
+
+def simulate_debris_field(vehicle, initial_conditions, breakup_threshold_pa=50000.0, 
+                          num_debris=8, min_amr_factor=0.5, max_amr_factor=3.0,
+                          velocity_perturbation=50.0, seed=None):
+    if seed is not None:
+        np.random.seed(seed)
+    
+    results_main = simulate_reentry(
+        vehicle, initial_conditions,
+        reentry_mode='ballistic',
+        alpha=0.0,
+        bank_angle=0.0
+    )
+    
+    dynamic_pressures = results_main['dynamic_pressures']
+    breakup_idx = None
+    
+    for i, q in enumerate(dynamic_pressures):
+        if q >= breakup_threshold_pa:
+            breakup_idx = i
+            break
+    
+    if breakup_idx is None:
+        return None
+    
+    breakup_r = R_EARTH + results_main['altitudes'][breakup_idx]
+    breakup_lon = results_main['longitudes'][breakup_idx]
+    breakup_lat = results_main['latitudes'][breakup_idx]
+    breakup_v = results_main['velocities'][breakup_idx]
+    breakup_gamma = results_main['flight_path_angles'][breakup_idx]
+    breakup_chi = results_main['heading_angles'][breakup_idx]
+    
+    breakup_state = [breakup_r, breakup_lon, breakup_lat, breakup_v, breakup_gamma, breakup_chi]
+    
+    base_amr = vehicle.reference_area / vehicle.mass
+    
+    debris_list = []
+    
+    for i in range(num_debris):
+        amr_factor = np.random.uniform(min_amr_factor, max_amr_factor)
+        debris_amr = base_amr * amr_factor
+        debris_Cd = np.random.uniform(1.0, 1.8)
+        
+        dv_pert = np.random.uniform(-velocity_perturbation, velocity_perturbation, 3)
+        dv_pert_km_s = dv_pert / 1000.0
+        
+        gamma_rad = np.deg2rad(breakup_gamma)
+        chi_rad = np.deg2rad(breakup_chi)
+        
+        vx = breakup_v * np.cos(gamma_rad) * np.cos(chi_rad) + dv_pert_km_s[0]
+        vy = breakup_v * np.cos(gamma_rad) * np.sin(chi_rad) + dv_pert_km_s[1]
+        vz = breakup_v * np.sin(gamma_rad) + dv_pert_km_s[2]
+        
+        v_pert = np.sqrt(vx**2 + vy**2 + vz**2)
+        gamma_pert = np.rad2deg(np.arcsin(vz / v_pert))
+        chi_pert = np.rad2deg(np.arctan2(vy, vx))
+        
+        debris_state = [breakup_r, breakup_lon, breakup_lat, v_pert, gamma_pert, chi_pert]
+        
+        debris_result = simulate_debris(
+            debris_state,
+            Cd=debris_Cd,
+            area_mass_ratio=debris_amr,
+            rtol=1e-5,
+            atol=1e-7
+        )
+        
+        if debris_result is not None:
+            debris_info = {
+                'id': i + 1,
+                'area_mass_ratio': debris_amr,
+                'ballistic_coefficient': 1.0 / (debris_Cd * debris_amr) if debris_Cd * debris_amr > 0 else 0,
+                'Cd': debris_Cd,
+                'result': debris_result,
+                'impact_lon': debris_result['impact_longitude'],
+                'impact_lat': debris_result['impact_latitude']
+            }
+            debris_list.append(debris_info)
+    
+    impact_lons = np.array([d['impact_lon'] for d in debris_list])
+    impact_lats = np.array([d['impact_lat'] for d in debris_list])
+    
+    if len(impact_lons) >= 2:
+        mean_lon = np.mean(impact_lons)
+        mean_lat = np.mean(impact_lats)
+        
+        lon_span = np.max(impact_lons) - np.min(impact_lons)
+        lat_span = np.max(impact_lats) - np.min(impact_lats)
+        
+        coords = np.column_stack([impact_lons, impact_lats])
+        mean_coord = np.array([mean_lon, mean_lat])
+        centered = coords - mean_coord
+        
+        if len(centered) >= 2:
+            cov = np.cov(centered.T)
+            eigenvalues, eigenvectors = np.linalg.eig(cov)
+            
+            sorted_indices = np.argsort(eigenvalues)[::-1]
+            eigenvalues = eigenvalues[sorted_indices]
+            eigenvectors = eigenvectors[:, sorted_indices]
+            
+            major_axis_length = 2 * np.sqrt(eigenvalues[0]) * 1.0 if eigenvalues[0] > 0 else 0
+            minor_axis_length = 2 * np.sqrt(eigenvalues[1]) * 1.0 if eigenvalues[1] > 0 else 0
+            
+            angle_rad = np.arctan2(eigenvectors[1, 0], eigenvectors[0, 0])
+            angle_deg = np.rad2deg(angle_rad)
+        else:
+            major_axis_length = lon_span
+            minor_axis_length = lat_span
+            angle_deg = 0.0
+    else:
+        mean_lon = impact_lons[0] if len(impact_lons) > 0 else 0
+        mean_lat = impact_lats[0] if len(impact_lats) > 0 else 0
+        lon_span = 0
+        lat_span = 0
+        major_axis_length = 0
+        minor_axis_length = 0
+        angle_deg = 0
+    
+    result = {
+        'breakup_altitude': results_main['altitudes'][breakup_idx],
+        'breakup_time': results_main['times'][breakup_idx],
+        'breakup_longitude': breakup_lon,
+        'breakup_latitude': breakup_lat,
+        'breakup_velocity': breakup_v,
+        'breakup_dynamic_pressure': dynamic_pressures[breakup_idx],
+        'debris': debris_list,
+        'mean_impact_lon': mean_lon,
+        'mean_impact_lat': mean_lat,
+        'lon_span': lon_span,
+        'lat_span': lat_span,
+        'major_axis_length': major_axis_length,
+        'minor_axis_length': minor_axis_length,
+        'ellipse_angle_deg': angle_deg,
+        'main_trajectory': results_main
+    }
+    
+    return result
+
+
+def simulate_reentry_fast(vehicle, initial_conditions, t_max=2000.0, dt_eval=5.0):
+    r0 = R_EARTH + initial_conditions.altitude
+    lon0 = initial_conditions.longitude
+    lat0 = initial_conditions.latitude
+    v0 = initial_conditions.velocity
+    gamma0 = initial_conditions.flight_path_angle
+    chi0 = initial_conditions.heading_angle
+    m0 = vehicle.mass
+    T_surf0 = 250.0
+    
+    state0 = [r0, lon0, lat0, v0, gamma0, chi0, m0, T_surf0]
+    
+    def event_impact(t, state):
+        return state[0] - R_EARTH - 0.1
+    
+    event_impact.terminal = True
+    event_impact.direction = -1
+    
+    t_eval = np.arange(0, t_max, dt_eval)
+    
+    sol = solve_ivp(
+        reentry_equations,
+        [0, t_max],
+        state0,
+        args=(vehicle, 'ballistic', 0.0, 0.0),
+        method='RK23',
+        t_eval=t_eval,
+        events=event_impact,
+        rtol=1e-5,
+        atol=1e-7
+    )
+    
+    if not sol.success:
+        return None
+    
+    states = sol.y.T
+    
+    return {
+        'impact_longitude': states[-1, 1],
+        'impact_latitude': states[-1, 2]
+    }
+
+
+def haversine_distance(lon1, lat1, lon2, lat2):
+    R = 6371.0
+    
+    lon1_rad = np.deg2rad(lon1)
+    lat1_rad = np.deg2rad(lat1)
+    lon2_rad = np.deg2rad(lon2)
+    lat2_rad = np.deg2rad(lat2)
+    
+    dlon = lon2_rad - lon1_rad
+    dlat = lat2_rad - lat1_rad
+    
+    a = np.sin(dlat / 2)**2 + np.cos(lat1_rad) * np.cos(lat2_rad) * np.sin(dlon / 2)**2
+    c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
+    
+    return R * c
+
+
+def analyze_reentry_window(vehicle, base_initial_conditions, 
+                           target_lon, target_lat, allowed_radius_km=100.0,
+                           gamma_min=-7.0, gamma_max=-1.0, gamma_step=0.5,
+                           chi_delta=30.0, chi_step=5.0):
+    base_gamma = base_initial_conditions.flight_path_angle
+    base_chi = base_initial_conditions.heading_angle
+    
+    gamma_range = np.arange(gamma_min, gamma_max + gamma_step / 2, gamma_step)
+    chi_min = base_chi - chi_delta
+    chi_max = base_chi + chi_delta
+    chi_range = np.arange(chi_min, chi_max + chi_step / 2, chi_step)
+    
+    results = []
+    valid_params = []
+    
+    for gamma in gamma_range:
+        for chi in chi_range:
+            ic = ReentryInitialConditions(
+                altitude=base_initial_conditions.altitude,
+                velocity=base_initial_conditions.velocity,
+                flight_path_angle=gamma,
+                heading_angle=chi,
+                latitude=base_initial_conditions.latitude,
+                longitude=base_initial_conditions.longitude
+            )
+            
+            result = simulate_reentry_fast(vehicle, ic)
+            
+            if result is not None:
+                dist = haversine_distance(
+                    target_lon, target_lat,
+                    result['impact_longitude'], result['impact_latitude']
+                )
+                
+                result_entry = {
+                    'gamma': gamma,
+                    'chi': chi,
+                    'impact_lon': result['impact_longitude'],
+                    'impact_lat': result['impact_latitude'],
+                    'distance_km': dist,
+                    'valid': dist <= allowed_radius_km
+                }
+                results.append(result_entry)
+                
+                if result_entry['valid']:
+                    valid_params.append({
+                        'flight_path_angle': gamma,
+                        'heading_angle': chi,
+                        'impact_longitude': result['impact_longitude'],
+                        'impact_latitude': result['impact_latitude'],
+                        'distance_km': dist
+                    })
+    
+    gamma_grid, chi_grid = np.meshgrid(gamma_range, chi_range, indexing='ij')
+    distance_grid = np.full_like(gamma_grid, np.nan)
+    
+    for res in results:
+        i = np.where(gamma_range == res['gamma'])[0][0]
+        j = np.where(chi_range == res['chi'])[0][0]
+        distance_grid[i, j] = res['distance_km']
+    
+    valid_params_sorted = sorted(valid_params, key=lambda x: x['distance_km'])
+    
+    return {
+        'gamma_range': gamma_range,
+        'chi_range': chi_range,
+        'gamma_grid': gamma_grid,
+        'chi_grid': chi_grid,
+        'distance_grid': distance_grid,
+        'all_results': results,
+        'valid_parameters': valid_params_sorted,
+        'target_lon': target_lon,
+        'target_lat': target_lat,
+        'allowed_radius_km': allowed_radius_km
+    }

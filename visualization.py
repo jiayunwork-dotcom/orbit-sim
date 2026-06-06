@@ -967,3 +967,161 @@ def create_reentry_ground_track_plot(results_ballistic, results_lifting):
     )
     
     return fig
+
+
+def create_debris_field_plot(debris_field_result):
+    fig = go.Figure()
+    
+    main_traj = debris_field_result['main_trajectory']
+    
+    lons_main = main_traj['longitudes'].copy()
+    for i in range(1, len(lons_main)):
+        if abs(lons_main[i] - lons_main[i-1]) > 180:
+            lons_main[i] = np.nan
+    
+    fig.add_trace(go.Scatter(
+        x=lons_main,
+        y=main_traj['latitudes'],
+        mode='lines',
+        line=dict(color='gray', width=2, dash='dash'),
+        name='主航天器轨迹'
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=[debris_field_result['breakup_longitude']],
+        y=[debris_field_result['breakup_latitude']],
+        mode='markers',
+        marker=dict(size=15, color='red', symbol='star'),
+        name=f'解体点 (h={debris_field_result["breakup_altitude"]:.1f}km)'
+    ))
+    
+    debris = debris_field_result['debris']
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
+    
+    for i, d in enumerate(debris):
+        color = colors[i % len(colors)]
+        
+        lons_d = d['result']['longitudes'].copy()
+        for j in range(1, len(lons_d)):
+            if abs(lons_d[j] - lons_d[j-1]) > 180:
+                lons_d[j] = np.nan
+        
+        fig.add_trace(go.Scatter(
+            x=lons_d,
+            y=d['result']['latitudes'],
+            mode='lines',
+            line=dict(color=color, width=1.5),
+            name=f'碎片 {d["id"]} 轨迹',
+            showlegend=False
+        ))
+        
+        fig.add_trace(go.Scatter(
+            x=[d['impact_lon']],
+            y=[d['impact_lat']],
+            mode='markers',
+            marker=dict(size=10, color=color, symbol='circle'),
+            name=f'碎片 {d["id"]} 落点'
+        ))
+    
+    if debris_field_result['major_axis_length'] > 0 and debris_field_result['minor_axis_length'] > 0:
+        mean_lon = debris_field_result['mean_impact_lon']
+        mean_lat = debris_field_result['mean_impact_lat']
+        major = debris_field_result['major_axis_length']
+        minor = debris_field_result['minor_axis_length']
+        angle = debris_field_result['ellipse_angle_deg']
+        
+        theta = np.linspace(0, 2 * np.pi, 100)
+        ellipse_x = major / 2 * np.cos(theta)
+        ellipse_y = minor / 2 * np.sin(theta)
+        
+        angle_rad = np.deg2rad(angle)
+        rot_matrix = np.array([
+            [np.cos(angle_rad), -np.sin(angle_rad)],
+            [np.sin(angle_rad), np.cos(angle_rad)]
+        ])
+        
+        rotated = np.dot(rot_matrix, np.array([ellipse_x, ellipse_y]))
+        ellipse_lon = mean_lon + rotated[0]
+        ellipse_lat = mean_lat + rotated[1]
+        
+        fig.add_trace(go.Scatter(
+            x=ellipse_lon,
+            y=ellipse_lat,
+            mode='lines',
+            line=dict(color='black', width=2, dash='dash'),
+            name='散布椭圆'
+        ))
+        
+        fig.add_trace(go.Scatter(
+            x=[mean_lon],
+            y=[mean_lat],
+            mode='markers',
+            marker=dict(size=12, color='black', symbol='x'),
+            name='平均落点'
+        ))
+    
+    lat_lines = [-60, -30, 0, 30, 60]
+    for lat in lat_lines:
+        fig.add_hline(y=lat, line_dash="dash", line_color="gray", opacity=0.5)
+    
+    lon_lines = [-180, -120, -60, 0, 60, 120, 180]
+    for lon in lon_lines:
+        fig.add_vline(x=lon, line_dash="dash", line_color="gray", opacity=0.5)
+    
+    fig.update_layout(
+        title=f'碎片散布场 (解体动压: {debris_field_result["breakup_dynamic_pressure"]:.1f} Pa)',
+        xaxis_title='经度 (°)',
+        yaxis_title='纬度 (°)',
+        xaxis=dict(range=[-180, 180], dtick=30),
+        yaxis=dict(range=[-90, 90], dtick=30),
+        width=900,
+        height=600,
+        showlegend=True,
+        legend=dict(x=0.01, y=0.99)
+    )
+    
+    return fig
+
+
+def create_reentry_window_heatmap(window_result):
+    fig = go.Figure()
+    
+    distance_grid = window_result['distance_grid'].copy()
+    
+    distance_display = np.ma.masked_where(np.isnan(distance_grid), distance_grid)
+    
+    fig.add_trace(go.Heatmap(
+        z=distance_display,
+        x=window_result['chi_range'],
+        y=window_result['gamma_range'],
+        colorscale='Viridis_r',
+        colorbar=dict(title='落点偏差 (km)'),
+        zmin=0,
+        zmax=np.nanmax(distance_grid) if np.any(~np.isnan(distance_grid)) else 500,
+        hovertemplate='航向角: %{x:.1f}°<br>飞行路径角: %{y:.1f}°<br>偏差: %{z:.1f} km<extra></extra>'
+    ))
+    
+    valid_params = window_result['valid_parameters']
+    if valid_params:
+        valid_gammas = [p['flight_path_angle'] for p in valid_params]
+        valid_chis = [p['heading_angle'] for p in valid_params]
+        
+        fig.add_trace(go.Scatter(
+            x=valid_chis,
+            y=valid_gammas,
+            mode='markers',
+            marker=dict(size=10, color='red', symbol='circle-open', line=dict(width=2)),
+            name=f'可行参数 (共{len(valid_params)}组)'
+        ))
+    
+    fig.update_layout(
+        title=f'再入窗口可行域分析 (目标: {window_result["target_lon"]:.1f}°E, {window_result["target_lat"]:.1f}°N, 允许偏差: {window_result["allowed_radius_km"]:.0f}km)',
+        xaxis_title='航向角 (°)',
+        yaxis_title='飞行路径角 (°)',
+        width=850,
+        height=600,
+        showlegend=True,
+        legend=dict(x=0.01, y=0.99)
+    )
+    
+    return fig

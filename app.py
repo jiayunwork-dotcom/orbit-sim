@@ -29,11 +29,14 @@ from visualization import (
     create_reentry_altitude_time_plot,
     create_reentry_heat_flux_plot,
     create_reentry_overload_plot,
-    create_reentry_ground_track_plot
+    create_reentry_ground_track_plot,
+    create_debris_field_plot,
+    create_reentry_window_heatmap
 )
 from reentry import (
     ReentryVehicle, ReentryInitialConditions,
-    simulate_both_modes, standard_atmosphere_1976
+    simulate_both_modes, standard_atmosphere_1976,
+    simulate_debris_field, analyze_reentry_window
 )
 from constellation import (
     walker_delta_constellation, get_constellation_orbit_elements,
@@ -1029,7 +1032,7 @@ elif page == "🔥 再入轨迹分析":
     支持弹道再入和升力再入两种模式的对比分析。
     """)
     
-    tab1, tab2, tab3 = st.tabs(["参数设置", "仿真结果", "大气模型验证"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["参数设置", "仿真结果", "大气模型验证", "碎片散布场", "再入窗口"])
     
     with tab1:
         st.subheader("再入初始条件")
@@ -1256,6 +1259,240 @@ elif page == "🔥 再入轨迹分析":
         
         fig_atm.update_layout(height=400, width=900, title='1976标准大气模型')
         st.plotly_chart(fig_atm, use_container_width=True)
+    
+    with tab4:
+        st.subheader("碎片散布场预测")
+        
+        st.markdown("""
+        当再入过程中动压超过结构极限时，航天器会发生解体并产生多个碎片。
+        每个碎片具有不同的面质比和弹道系数，从解体点开始独立飞行直到落地。
+        """)
+        
+        col_deb1, col_deb2, col_deb3 = st.columns(3)
+        
+        with col_deb1:
+            breakup_threshold = st.number_input("解体动压阈值 (kPa)", value=50.0, min_value=10.0, max_value=200.0, step=5.0)
+            num_debris = st.slider("碎片数量", min_value=5, max_value=20, value=8, step=1)
+        
+        with col_deb2:
+            min_amr_factor = st.slider("最小面质比倍数", min_value=0.2, max_value=1.0, value=0.5, step=0.1)
+            max_amr_factor = st.slider("最大面质比倍数", min_value=1.0, max_value=5.0, value=3.0, step=0.5)
+        
+        with col_deb3:
+            velocity_pert = st.number_input("速度扰动 (m/s)", value=50.0, min_value=0.0, max_value=200.0, step=10.0)
+            seed_debris = st.number_input("随机种子", value=42, min_value=0, max_value=9999, step=1)
+        
+        st.markdown("---")
+        
+        if st.button("开始碎片散布场仿真", key="run_debris_sim", type="primary"):
+            with st.spinner("正在进行碎片散布场仿真..."):
+                try:
+                    vehicle = ReentryVehicle(
+                        mass=mass_vehicle,
+                        reference_area=ref_area,
+                        nose_radius=nose_radius,
+                        ablation_threshold=ablation_threshold,
+                        Cd0=Cd0,
+                        CL_alpha=CL_alpha,
+                        alpha_max_LD=alpha_max_LD
+                    )
+                    
+                    init_cond = ReentryInitialConditions(
+                        altitude=alt_reentry,
+                        velocity=vel_reentry,
+                        flight_path_angle=gamma_reentry,
+                        heading_angle=chi_reentry,
+                        latitude=lat_reentry,
+                        longitude=lon_reentry
+                    )
+                    
+                    debris_result = simulate_debris_field(
+                        vehicle, init_cond,
+                        breakup_threshold_pa=breakup_threshold * 1000.0,
+                        num_debris=num_debris,
+                        min_amr_factor=min_amr_factor,
+                        max_amr_factor=max_amr_factor,
+                        velocity_perturbation=velocity_pert,
+                        seed=seed_debris
+                    )
+                    
+                    if debris_result is None:
+                        st.warning("⚠️ 再入过程中动压未达到解体阈值，航天器未发生解体。")
+                        st.info("建议降低解体动压阈值或使用更陡的飞行路径角。")
+                    else:
+                        st.session_state['debris_result'] = debris_result
+                        st.session_state['debris_sim_done'] = True
+                        st.success("碎片散布场仿真完成!")
+                except Exception as ex:
+                    st.error(f"仿真失败: {str(ex)}")
+                    st.session_state['debris_sim_done'] = False
+        
+        st.markdown("---")
+        
+        if not st.session_state.get('debris_sim_done', False):
+            st.info("请设置参数后点击 '开始碎片散布场仿真' 按钮")
+        else:
+            debris_result = st.session_state['debris_result']
+            
+            col_deb_sum1, col_deb_sum2, col_deb_sum3 = st.columns(3)
+            
+            with col_deb_sum1:
+                st.metric("解体高度", f"{debris_result['breakup_altitude']:.1f} km")
+                st.metric("解体时刻", f"{debris_result['breakup_time']:.1f} s")
+                st.metric("解体动压", f"{debris_result['breakup_dynamic_pressure']/1000:.1f} kPa")
+            
+            with col_deb_sum2:
+                st.metric("经度跨度", f"{debris_result['lon_span']:.2f} °")
+                st.metric("纬度跨度", f"{debris_result['lat_span']:.2f} °")
+                st.metric("碎片数量", f"{len(debris_result['debris'])} 个")
+            
+            with col_deb_sum3:
+                st.metric("平均落点经度", f"{debris_result['mean_impact_lon']:.2f} °")
+                st.metric("平均落点纬度", f"{debris_result['mean_impact_lat']:.2f} °")
+                st.metric("长轴长度", f"{debris_result['major_axis_length']:.2f} °")
+            
+            st.markdown("---")
+            
+            st.subheader("地面散布图")
+            fig_debris = create_debris_field_plot(debris_result)
+            st.plotly_chart(fig_debris, use_container_width=True)
+            
+            st.markdown("---")
+            
+            st.subheader("碎片参数表")
+            debris_data = []
+            for d in debris_result['debris']:
+                debris_data.append({
+                    '碎片编号': d['id'],
+                    '面质比 (m²/kg)': f"{d['area_mass_ratio']:.4f}",
+                    '弹道系数 (kg/m²)': f"{d['ballistic_coefficient']:.1f}",
+                    '阻力系数 Cd': f"{d['Cd']:.2f}",
+                    '落点经度 (°)': f"{d['impact_lon']:.3f}",
+                    '落点纬度 (°)': f"{d['impact_lat']:.3f}",
+                    '飞行时间 (s)': f"{d['result']['total_time']:.1f}"
+                })
+            
+            df_debris = pd.DataFrame(debris_data)
+            st.dataframe(df_debris, use_container_width=True)
+    
+    with tab5:
+        st.subheader("再入窗口约束分析")
+        
+        st.markdown("""
+        通过扫描飞行路径角和航向角的组合，找出能让碎片（或航天器）落在指定安全海域内的再入初始条件。
+        """)
+        
+        col_win1, col_win2, col_win3 = st.columns(3)
+        
+        with col_win1:
+            target_lon = st.number_input("目标落点经度 (°)", value=10.0, min_value=-180.0, max_value=180.0, step=1.0)
+            target_lat = st.number_input("目标落点纬度 (°)", value=0.0, min_value=-90.0, max_value=90.0, step=1.0)
+            allowed_radius = st.number_input("允许偏差半径 (km)", value=100.0, min_value=10.0, max_value=1000.0, step=10.0)
+        
+        with col_win2:
+            gamma_min = st.number_input("最小飞行路径角 (°)", value=-7.0, min_value=-15.0, max_value=0.0, step=0.5)
+            gamma_max = st.number_input("最大飞行路径角 (°)", value=-1.0, min_value=-10.0, max_value=0.0, step=0.5)
+            gamma_step = st.number_input("飞行路径角步长 (°)", value=0.5, min_value=0.1, max_value=2.0, step=0.1)
+        
+        with col_win3:
+            chi_delta = st.number_input("航向角扫描范围 (±°)", value=30.0, min_value=5.0, max_value=90.0, step=5.0)
+            chi_step = st.number_input("航向角步长 (°)", value=5.0, min_value=1.0, max_value=15.0, step=1.0)
+        
+        st.markdown("---")
+        
+        if st.button("开始再入窗口分析", key="run_window_analysis", type="primary"):
+            with st.spinner("正在进行再入窗口分析（可能需要几分钟）..."):
+                try:
+                    vehicle = ReentryVehicle(
+                        mass=mass_vehicle,
+                        reference_area=ref_area,
+                        nose_radius=nose_radius,
+                        ablation_threshold=ablation_threshold,
+                        Cd0=Cd0,
+                        CL_alpha=CL_alpha,
+                        alpha_max_LD=alpha_max_LD
+                    )
+                    
+                    init_cond = ReentryInitialConditions(
+                        altitude=alt_reentry,
+                        velocity=vel_reentry,
+                        flight_path_angle=gamma_reentry,
+                        heading_angle=chi_reentry,
+                        latitude=lat_reentry,
+                        longitude=lon_reentry
+                    )
+                    
+                    window_result = analyze_reentry_window(
+                        vehicle, init_cond,
+                        target_lon=target_lon,
+                        target_lat=target_lat,
+                        allowed_radius_km=allowed_radius,
+                        gamma_min=gamma_min,
+                        gamma_max=gamma_max,
+                        gamma_step=gamma_step,
+                        chi_delta=chi_delta,
+                        chi_step=chi_step
+                    )
+                    
+                    st.session_state['window_result'] = window_result
+                    st.session_state['window_analysis_done'] = True
+                    
+                    if window_result['valid_parameters']:
+                        st.success(f"找到 {len(window_result['valid_parameters'])} 组可行参数!")
+                    else:
+                        st.warning("未找到满足条件的可行参数，建议扩大扫描范围或放宽允许偏差。")
+                except Exception as ex:
+                    st.error(f"分析失败: {str(ex)}")
+                    st.session_state['window_analysis_done'] = False
+        
+        st.markdown("---")
+        
+        if not st.session_state.get('window_analysis_done', False):
+            st.info("请设置参数后点击 '开始再入窗口分析' 按钮")
+        else:
+            window_result = st.session_state['window_result']
+            
+            col_win_sum1, col_win_sum2 = st.columns(2)
+            
+            with col_win_sum1:
+                st.metric("扫描参数组合数", f"{len(window_result['all_results'])} 组")
+                st.metric("可行参数组合数", f"{len(window_result['valid_parameters'])} 组")
+            
+            with col_win_sum2:
+                if window_result['valid_parameters']:
+                    best = window_result['valid_parameters'][0]
+                    st.metric("最小偏差", f"{best['distance_km']:.1f} km")
+                    st.metric("最优飞行路径角", f"{best['flight_path_angle']:.1f} °")
+                else:
+                    st.metric("最小偏差", "无可行解")
+                    st.metric("最优飞行路径角", "无可行解")
+            
+            st.markdown("---")
+            
+            st.subheader("可行域热力图")
+            fig_window = create_reentry_window_heatmap(window_result)
+            st.plotly_chart(fig_window, use_container_width=True)
+            
+            st.markdown("---")
+            
+            if window_result['valid_parameters']:
+                st.subheader("推荐参数组合表（按偏差从小到大排序）")
+                valid_data = []
+                for i, p in enumerate(window_result['valid_parameters'][:20]):
+                    valid_data.append({
+                        '排名': i + 1,
+                        '飞行路径角 (°)': f"{p['flight_path_angle']:.1f}",
+                        '航向角 (°)': f"{p['heading_angle']:.1f}",
+                        '落点经度 (°)': f"{p['impact_longitude']:.3f}",
+                        '落点纬度 (°)': f"{p['impact_latitude']:.3f}",
+                        '偏差距离 (km)': f"{p['distance_km']:.1f}"
+                    })
+                
+                df_valid = pd.DataFrame(valid_data)
+                st.dataframe(df_valid, use_container_width=True)
+                
+                if len(window_result['valid_parameters']) > 20:
+                    st.info(f"仅显示前20组最优参数，共 {len(window_result['valid_parameters'])} 组可行解。")
 
 st.markdown("---")
 st.caption("🛰️ 航天器轨道力学分析与变轨仿真工具 | 基于开普勒轨道力学与数值方法")
