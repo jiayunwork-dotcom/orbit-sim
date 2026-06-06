@@ -1384,3 +1384,204 @@ def create_batch_screening_table(batch_results, prob_threshold=1e-4):
     )
     
     return fig
+
+
+def create_probability_evolution_plot(evolution_result, prob_threshold=1e-4):
+    intervals = evolution_result['intervals']
+    probs = evolution_result['probabilities']
+    interval_type = evolution_result['interval_type']
+    
+    x_label = '时间区间 (天)' if interval_type == 'day' else '时间区间 (小时)'
+    
+    fig = go.Figure()
+    
+    colors = ['red' if p > prob_threshold else '#1f77b4' for p in probs]
+    
+    fig.add_trace(go.Scatter(
+        x=intervals,
+        y=probs,
+        mode='lines+markers',
+        line=dict(color='#1f77b4', width=2),
+        marker=dict(
+            size=8,
+            color=colors,
+            line=dict(width=1, color='DarkSlateGrey')
+        ),
+        name='碰撞概率'
+    ))
+    
+    fig.add_hline(
+        y=prob_threshold,
+        line_dash="dash",
+        line_color="red",
+        annotation_text=f"预警阈值 ({prob_threshold:.0e})",
+        annotation_position="right"
+    )
+    
+    fig.update_layout(
+        title='碰撞概率随时间演化',
+        xaxis_title=x_label,
+        yaxis_title='碰撞概率',
+        yaxis_type='log',
+        width=800,
+        height=450,
+        showlegend=True,
+        legend=dict(x=0.01, y=0.99)
+    )
+    
+    fig.update_xaxes(
+        tickmode='linear',
+        dtick=1
+    )
+    
+    return fig
+
+
+def create_sparkline(probabilities, width=50, height=20, line_color='#1f77b4'):
+    x = list(range(len(probabilities)))
+    
+    fig = go.Figure()
+    
+    fig.add_trace(go.Scatter(
+        x=x,
+        y=probabilities,
+        mode='lines',
+        line=dict(color=line_color, width=1),
+        showlegend=False,
+        hoverinfo='none'
+    ))
+    
+    fig.update_layout(
+        width=width,
+        height=height,
+        margin=dict(l=0, r=0, t=0, b=0),
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        xaxis=dict(
+            visible=False,
+            showgrid=False,
+            zeroline=False
+        ),
+        yaxis=dict(
+            visible=False,
+            showgrid=False,
+            zeroline=False
+        )
+    )
+    
+    return fig
+
+
+def create_maneuver_comparison_plot(evolution_before, evolution_after, prob_threshold=1e-4):
+    intervals = evolution_before['intervals']
+    probs_before = evolution_before['probabilities']
+    probs_after = evolution_after['probabilities']
+    interval_type = evolution_before['interval_type']
+    
+    x_label = '时间区间 (天)' if interval_type == 'day' else '时间区间 (小时)'
+    
+    fig = go.Figure()
+    
+    fig.add_trace(go.Scatter(
+        x=intervals,
+        y=probs_before,
+        mode='lines+markers',
+        line=dict(color='#d62728', width=2),
+        marker=dict(size=6, color='#d62728'),
+        name='规避前'
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=intervals,
+        y=probs_after,
+        mode='lines+markers',
+        line=dict(color='#2ca02c', width=2),
+        marker=dict(size=6, color='#2ca02c'),
+        name='规避后'
+    ))
+    
+    fig.add_hline(
+        y=prob_threshold,
+        line_dash="dash",
+        line_color="red",
+        opacity=0.5,
+        annotation_text=f"预警阈值 ({prob_threshold:.0e})",
+        annotation_position="right"
+    )
+    
+    fig.update_layout(
+        title='规避前后碰撞概率对比',
+        xaxis_title=x_label,
+        yaxis_title='碰撞概率',
+        yaxis_type='log',
+        width=800,
+        height=450,
+        showlegend=True,
+        legend=dict(x=0.01, y=0.99)
+    )
+    
+    fig.update_xaxes(
+        tickmode='linear',
+        dtick=1
+    )
+    
+    return fig
+
+
+def create_collision_cumulative_plot_with_ci(stats_result):
+    windows = [cp['window_days'] for cp in stats_result['cumulative_probs']]
+    probs = [cp['prob_any_collision'] for cp in stats_result['cumulative_probs']]
+    lower = [cp['prob_lower_90'] for cp in stats_result['cumulative_probs']]
+    upper = [cp['prob_upper_90'] for cp in stats_result['cumulative_probs']]
+    
+    fig = go.Figure()
+    
+    fig.add_trace(go.Scatter(
+        x=windows,
+        y=upper,
+        mode='lines',
+        line=dict(width=0),
+        showlegend=False,
+        hoverinfo='none'
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=windows,
+        y=lower,
+        mode='lines',
+        line=dict(width=0),
+        fill='tonexty',
+        fillcolor='rgba(31, 119, 180, 0.2)',
+        name='90%置信区间',
+        hoverinfo='none'
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=windows,
+        y=probs,
+        mode='lines+markers',
+        line=dict(color='#1f77b4', width=3),
+        marker=dict(size=10, color='#1f77b4'),
+        name='累积碰撞概率(点估计)'
+    ))
+    
+    fig.add_hline(
+        y=1e-4,
+        line_dash="dash",
+        line_color="red",
+        annotation_text="预警阈值 (1e-4)",
+        annotation_position="right"
+    )
+    
+    fig.update_layout(
+        title='碰撞概率随时间累积曲线 (含90%置信区间)',
+        xaxis_title='时间窗口 (天)',
+        yaxis_title='至少一次碰撞概率',
+        yaxis_type='log',
+        width=800,
+        height=450,
+        showlegend=True,
+        legend=dict(x=0.01, y=0.99)
+    )
+    
+    return fig

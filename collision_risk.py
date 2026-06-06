@@ -367,7 +367,8 @@ def batch_screening(main_elements, debris_list, main_cov, debris_cov_list,
                     main_radius=5.0, debris_radii=None,
                     t_start=0, t_end=7*86400, dt_coarse=30,
                     prob_threshold=1e-4,
-                    target_prob=1e-6, t_maneuver_offset=6*3600):
+                    target_prob=1e-6, t_maneuver_offset=6*3600,
+                    compute_evolution=True, evolution_interval='day'):
     if debris_radii is None:
         debris_radii = [5.0] * len(debris_list)
     
@@ -389,6 +390,18 @@ def batch_screening(main_elements, debris_list, main_cov, debris_cov_list,
             'exceeds_threshold': result['collision_probability'] > prob_threshold,
             'raw_result': result
         }
+        
+        if compute_evolution:
+            evolution = collision_risk_time_evolution(
+                main_elements, debris_elements,
+                main_cov, debris_cov,
+                main_radius, debris_radius,
+                t_start, t_end,
+                interval=evolution_interval,
+                dt_coarse=dt_coarse
+            )
+            debris_result['evolution'] = evolution
+            debris_result['probability_trend'] = evolution['probabilities']
         
         if debris_result['exceeds_threshold']:
             maneuver = find_min_dv_maneuver(
@@ -456,3 +469,175 @@ def get_default_covariance(position_sigma_km=0.1, velocity_sigma_km_s=0.001):
 
 def get_position_covariance(position_sigma_km=0.1):
     return np.eye(3) * position_sigma_km**2
+
+
+def collision_risk_time_evolution(elements1, elements2, cov1, cov2,
+                                   radius1=5.0, radius2=5.0,
+                                   t_start=0, t_end=7*86400,
+                                   interval='day', dt_coarse=30):
+    if interval == 'hour':
+        interval_seconds = 3600
+    else:
+        interval_seconds = 86400
+    
+    total_duration = t_end - t_start
+    num_intervals = max(1, int(np.ceil(total_duration / interval_seconds)))
+    
+    intervals = []
+    interval_probs = []
+    interval_distances = []
+    interval_times = []
+    
+    for i in range(num_intervals):
+        interval_start = t_start + i * interval_seconds
+        interval_end = min(t_start + (i + 1) * interval_seconds, t_end)
+        
+        if interval_end <= interval_start:
+            continue
+        
+        result = collision_risk_analysis(
+            elements1, elements2, cov1, cov2,
+            radius1=radius1, radius2=radius2,
+            t_start=interval_start, t_end=interval_end,
+            dt_coarse=dt_coarse
+        )
+        
+        intervals.append(i + 1)
+        interval_probs.append(result['collision_probability'])
+        interval_distances.append(result['min_distance'])
+        interval_times.append((interval_start + interval_end) / 2)
+    
+    return {
+        'intervals': intervals,
+        'probabilities': np.array(interval_probs),
+        'min_distances': np.array(interval_distances),
+        'interval_mid_times': np.array(interval_times),
+        'interval_seconds': interval_seconds,
+        'num_intervals': num_intervals,
+        'interval_type': interval
+    }
+
+
+def monte_carlo_collision_prob(elements1, elements2, cov1, cov2,
+                                radius1=5.0, radius2=5.0,
+                                t_start=0, t_end=7*86400,
+                                n_samples=50, dt_coarse=30):
+    nominal_result = collision_risk_analysis(
+        elements1, elements2, cov1, cov2,
+        radius1, radius2, t_start, t_end, dt_coarse
+    )
+    
+    prob_samples = []
+    
+    try:
+        L1 = np.linalg.cholesky(cov1)
+        L2 = np.linalg.cholesky(cov2)
+    except np.linalg.LinAlgError:
+        return {
+            'nominal_prob': nominal_result['collision_probability'],
+            'prob_samples': [nominal_result['collision_probability']] * n_samples,
+            'lower_90': nominal_result['collision_probability'],
+            'upper_90': nominal_result['collision_probability'],
+            'mean_prob': nominal_result['collision_probability'],
+            'median_prob': nominal_result['collision_probability']
+        }
+    
+    for _ in range(n_samples):
+        z1 = np.random.randn(3)
+        z2 = np.random.randn(3)
+        
+        perturb1 = L1 @ z1
+        perturb2 = L2 @ z2
+        
+        r1_orig, v1_orig = get_state_at_time(elements1, nominal_result['t_closest'])
+        r2_orig, v2_orig = get_state_at_time(elements2, nominal_result['t_closest'])
+        
+        r1_perturbed = r1_orig + perturb1
+        r2_perturbed = r2_orig + perturb2
+        
+        r_rel_perturbed = r1_perturbed - r2_perturbed
+        v_rel = v1_orig - v2_orig
+        
+        b_plane_pos_pert, proj_matrix = project_to_b_plane(r_rel_perturbed, v_rel)
+        cov_b_plane_pert = project_covariance_to_b_plane(cov1, cov2, proj_matrix)
+        
+        prob_pert = compute_collision_probability(
+            b_plane_pos_pert, cov_b_plane_pert, radius1 + radius2
+        )
+        prob_samples.append(prob_pert)
+    
+    prob_samples = np.array(prob_samples)
+    prob_samples_sorted = np.sort(prob_samples)
+    
+    lower_idx = int(n_samples * 0.05)
+    upper_idx = int(n_samples * 0.95)
+    
+    return {
+        'nominal_prob': nominal_result['collision_probability'],
+        'prob_samples': prob_samples,
+        'lower_90': prob_samples_sorted[lower_idx],
+        'upper_90': prob_samples_sorted[upper_idx],
+        'mean_prob': np.mean(prob_samples),
+        'median_prob': np.median(prob_samples),
+        'nominal_result': nominal_result
+    }
+
+
+def generate_collision_statistics_with_ci(main_elements, debris_list, main_cov, debris_cov_list,
+                                           main_radius=5.0, debris_radii=None,
+                                           time_windows=None, t_start=0, t_end=7*86400,
+                                           n_mc_samples=50):
+    if time_windows is None:
+        time_windows = [1, 2, 3, 5, 7]
+    
+    if debris_radii is None:
+        debris_radii = [5.0] * len(debris_list)
+    
+    cumulative_probs = []
+    
+    for window_days in time_windows:
+        window_end = t_start + window_days * 86400
+        window_probs_nominal = []
+        window_probs_lower = []
+        window_probs_upper = []
+        
+        for debris_elements, debris_cov, debris_radius in zip(debris_list, debris_cov_list, debris_radii):
+            mc_result = monte_carlo_collision_prob(
+                main_elements, debris_elements,
+                main_cov, debris_cov,
+                main_radius, debris_radius,
+                t_start, window_end,
+                n_samples=n_mc_samples
+            )
+            window_probs_nominal.append(mc_result['nominal_prob'])
+            window_probs_lower.append(mc_result['lower_90'])
+            window_probs_upper.append(mc_result['upper_90'])
+        
+        prob_any_nominal = 1.0 - np.prod(1.0 - np.array(window_probs_nominal))
+        prob_any_lower = 1.0 - np.prod(1.0 - np.array(window_probs_lower))
+        prob_any_upper = 1.0 - np.prod(1.0 - np.array(window_probs_upper))
+        
+        cumulative_probs.append({
+            'window_days': window_days,
+            'prob_any_collision': prob_any_nominal,
+            'prob_lower_90': prob_any_lower,
+            'prob_upper_90': prob_any_upper,
+            'individual_probs': window_probs_nominal,
+            'individual_lower': window_probs_lower,
+            'individual_upper': window_probs_upper
+        })
+    
+    distances = []
+    for debris_elements, debris_cov, debris_radius in zip(debris_list, debris_cov_list, debris_radii):
+        result = collision_risk_analysis(
+            main_elements, debris_elements,
+            main_cov, debris_cov,
+            main_radius, debris_radius,
+            t_start, t_end
+        )
+        distances.append(result['min_distance'])
+    
+    return {
+        'cumulative_probs': cumulative_probs,
+        'distances': np.array(distances)
+    }

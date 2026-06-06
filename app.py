@@ -34,12 +34,17 @@ from visualization import (
     create_reentry_window_heatmap,
     create_b_plane_plot, create_approach_distance_plot,
     create_collision_cumulative_plot, create_distance_distribution_plot,
-    create_batch_screening_table
+    create_batch_screening_table,
+    create_probability_evolution_plot, create_sparkline,
+    create_maneuver_comparison_plot, create_collision_cumulative_plot_with_ci
 )
 from collision_risk import (
     collision_risk_analysis, find_min_dv_maneuver,
     batch_screening, generate_collision_statistics,
-    get_position_covariance
+    get_position_covariance,
+    collision_risk_time_evolution,
+    generate_collision_statistics_with_ci,
+    apply_maneuver
 )
 from reentry import (
     ReentryVehicle, ReentryInitialConditions,
@@ -1542,8 +1547,11 @@ elif page == "☄️ 碰撞风险评估":
             st.markdown("---")
             st.markdown("#### 分析参数")
             pred_days = st.slider("预测时长 (天)", 1, 30, 7, key="cr_pred_days")
+            interval_option = st.selectbox("时间区间划分", ["按天", "按小时"], key="cr_interval", index=0)
             prob_threshold = st.number_input("碰撞概率预警阈值", value=1e-4, format="%.1e", key="cr_threshold")
             t_maneuver_offset_hours = st.slider("规避机动提前时间 (小时)", 1, 24, 6, key="cr_maneuver_offset")
+            
+            interval_type = 'day' if interval_option == "按天" else 'hour'
             
             if st.button("开始碰撞风险分析", type="primary", key="cr_run_single"):
                 with st.spinner("正在进行碰撞风险分析..."):
@@ -1563,8 +1571,19 @@ elif page == "☄️ 碰撞风险评估":
                             dt_coarse=30
                         )
                         
+                        evolution_result = collision_risk_time_evolution(
+                            el1, el2, cov1, cov2,
+                            radius1=r1_radius / 1000.0,
+                            radius2=r2_radius / 1000.0,
+                            t_start=0,
+                            t_end=pred_days * 86400,
+                            interval=interval_type,
+                            dt_coarse=30
+                        )
+                        
                         st.session_state['single_collision_result'] = result
                         st.session_state['single_collision_done'] = True
+                        st.session_state['evolution_result_single'] = evolution_result
                         st.session_state['el1_single'] = el1
                         st.session_state['el2_single'] = el2
                         st.session_state['cov1_single'] = cov1
@@ -1573,10 +1592,14 @@ elif page == "☄️ 碰撞风险评估":
                         st.session_state['r2_single'] = r2_radius / 1000.0
                         st.session_state['prob_threshold_single'] = prob_threshold
                         st.session_state['t_maneuver_offset_single'] = t_maneuver_offset_hours * 3600
+                        st.session_state['interval_type_single'] = interval_type
+                        st.session_state['pred_days_single'] = pred_days
                         
                         st.success("分析完成!")
                     except Exception as ex:
                         st.error(f"分析失败: {str(ex)}")
+                        import traceback
+                        st.error(traceback.format_exc())
                         st.session_state['single_collision_done'] = False
         
         with col_results:
@@ -1624,9 +1647,28 @@ elif page == "☄️ 碰撞风险评估":
                                     t_ca=result['t_closest'],
                                     t_maneuver_offset=st.session_state['t_maneuver_offset_single'],
                                     target_prob=prob_threshold / 100,
-                                    max_dv=0.5,
-                                    dv_step=0.0005
+                                    max_dv=0.5
                                 )
+                                
+                                if maneuver['success']:
+                                    new_elements1 = apply_maneuver(
+                                        st.session_state['el1_single'],
+                                        maneuver['dv_vec'],
+                                        maneuver['t_maneuver']
+                                    )
+                                    
+                                    evolution_after = collision_risk_time_evolution(
+                                        new_elements1, st.session_state['el2_single'],
+                                        st.session_state['cov1_single'], st.session_state['cov2_single'],
+                                        radius1=st.session_state['r1_single'],
+                                        radius2=st.session_state['r2_single'],
+                                        t_start=0,
+                                        t_end=st.session_state['pred_days_single'] * 86400,
+                                        interval=st.session_state['interval_type_single'],
+                                        dt_coarse=30
+                                    )
+                                    
+                                    st.session_state['evolution_after_maneuver'] = evolution_after
                                 
                                 st.session_state['maneuver_result'] = maneuver
                                 st.session_state['maneuver_done'] = True
@@ -1637,6 +1679,8 @@ elif page == "☄️ 碰撞风险评估":
                                     st.warning(maneuver['message'])
                             except Exception as ex:
                                 st.error(f"规避方案计算失败: {str(ex)}")
+                                import traceback
+                                st.error(traceback.format_exc())
                     
                     if st.session_state.get('maneuver_done', False):
                         maneuver = st.session_state['maneuver_result']
@@ -1654,6 +1698,14 @@ elif page == "☄️ 碰撞风险评估":
                             st.markdown("**规避后碰撞概率:**")
                             prob_after = maneuver['result_after_maneuver']['collision_probability']
                             st.write(f"{prob_after:.2e} (降至目标值以下)")
+                            
+                            if 'evolution_after_maneuver' in st.session_state:
+                                fig_compare = create_maneuver_comparison_plot(
+                                    st.session_state['evolution_result_single'],
+                                    st.session_state['evolution_after_maneuver'],
+                                    prob_threshold=st.session_state['prob_threshold_single']
+                                )
+                                st.plotly_chart(fig_compare, use_container_width=True)
                 
                 st.markdown("---")
                 
@@ -1662,6 +1714,14 @@ elif page == "☄️ 碰撞风险评估":
                 
                 fig_approach = create_approach_distance_plot(result)
                 st.plotly_chart(fig_approach, use_container_width=True)
+                
+                if 'evolution_result_single' in st.session_state:
+                    evolution_result = st.session_state['evolution_result_single']
+                    fig_evolution = create_probability_evolution_plot(
+                        evolution_result, 
+                        prob_threshold=st.session_state['prob_threshold_single']
+                    )
+                    st.plotly_chart(fig_evolution, use_container_width=True)
     
     with tab2:
         st.subheader("批量碎片筛查")
@@ -1796,8 +1856,45 @@ elif page == "☄️ 碰撞风险评估":
             else:
                 batch_results = st.session_state['batch_results']
                 
-                fig_table = create_batch_screening_table(batch_results, batch_prob_threshold)
-                st.plotly_chart(fig_table, use_container_width=True)
+                st.markdown("#### 筛查结果")
+                
+                header_cols = st.columns([1, 1.5, 1.2, 1.2, 1, 1.5, 1])
+                headers = ['碎片编号', '最近接近距离(km)', '接近时刻(小时)', '碰撞概率', '状态', '趋势', '规避Δv(m/s)']
+                for col, header in zip(header_cols, headers):
+                    col.markdown(f"**{header}**")
+                
+                st.markdown("---")
+                
+                for result in batch_results:
+                    cols = st.columns([1, 1.5, 1.2, 1.2, 1, 1.5, 1])
+                    
+                    t_ca_hours = result['t_closest'] / 3600
+                    prob = result['collision_probability']
+                    status = "⚠️ 超限" if result['exceeds_threshold'] else "✓ 安全"
+                    status_color = "red" if result['exceeds_threshold'] else "green"
+                    
+                    cols[0].write(f"#{result['debris_id']}")
+                    cols[1].write(f"{result['min_distance']:.3f}")
+                    cols[2].write(f"{t_ca_hours:.2f}")
+                    cols[3].write(f"{prob:.2e}")
+                    cols[4].markdown(f"<span style='color:{status_color}'>{status}</span>", unsafe_allow_html=True)
+                    
+                    if 'probability_trend' in result:
+                        spark_fig = create_sparkline(result['probability_trend'])
+                        cols[5].plotly_chart(spark_fig, use_container_width=True, config={'displayModeBar': False})
+                    else:
+                        cols[5].write("-")
+                    
+                    if result['exceeds_threshold'] and 'maneuver' in result:
+                        man = result['maneuver']
+                        if man['success']:
+                            cols[6].write(f"{man['dv_magnitude'] * 1000:.2f}")
+                        else:
+                            cols[6].write("N/A")
+                    else:
+                        cols[6].write("-")
+                    
+                    st.markdown("---")
                 
                 high_risk = [r for r in batch_results if r['exceeds_threshold']]
                 if high_risk:
@@ -1843,6 +1940,8 @@ elif page == "☄️ 碰撞风险评估":
             st.markdown("---")
             st.markdown("#### 统计参数")
             num_debris_stats = st.slider("碎片数量 (1-20)", 1, 20, 5, key="stats_num_debris")
+            n_mc_samples = st.slider("蒙特卡洛采样数", 10, 200, 50, key="stats_mc_samples")
+            show_ci = st.checkbox("显示置信区间", value=True, key="stats_show_ci")
             
             st.markdown("---")
             st.markdown("#### 碎片参数输入")
@@ -1921,18 +2020,30 @@ elif page == "☄️ 碰撞风险评估":
                             r_d = st.session_state[f'stats_r_d_{i}']
                             debris_radii_stats.append(r_d / 1000.0)
                         
-                        stats_result = generate_collision_statistics(
-                            el_main_stats, debris_list_stats, cov_main_stats, debris_cov_list_stats,
-                            main_radius=r_stats_radius / 1000.0,
-                            debris_radii=debris_radii_stats,
-                            time_windows=[1, 2, 3, 5, 7, 14, 30],
-                            t_start=0,
-                            t_end=30 * 86400
-                        )
+                        if show_ci:
+                            stats_result = generate_collision_statistics_with_ci(
+                                el_main_stats, debris_list_stats, cov_main_stats, debris_cov_list_stats,
+                                main_radius=r_stats_radius / 1000.0,
+                                debris_radii=debris_radii_stats,
+                                time_windows=[1, 2, 3, 5, 7, 14, 30],
+                                t_start=0,
+                                t_end=30 * 86400,
+                                n_mc_samples=n_mc_samples
+                            )
+                        else:
+                            stats_result = generate_collision_statistics(
+                                el_main_stats, debris_list_stats, cov_main_stats, debris_cov_list_stats,
+                                main_radius=r_stats_radius / 1000.0,
+                                debris_radii=debris_radii_stats,
+                                time_windows=[1, 2, 3, 5, 7, 14, 30],
+                                t_start=0,
+                                t_end=30 * 86400
+                            )
                         
                         st.session_state['stats_result'] = stats_result
                         st.session_state['stats_done'] = True
                         st.session_state['stats_num_debris'] = num_debris_stats
+                        st.session_state['stats_show_ci'] = show_ci
                         st.success("统计数据生成完成!")
                     except Exception as ex:
                         st.error(f"统计分析失败: {str(ex)}")
@@ -1946,8 +2057,12 @@ elif page == "☄️ 碰撞风险评估":
             else:
                 stats_result = st.session_state['stats_result']
                 display_num = st.session_state.get('stats_num_debris', num_debris_stats)
+                show_ci = st.session_state.get('stats_show_ci', False)
                 
-                fig_cumulative = create_collision_cumulative_plot(stats_result)
+                if show_ci and 'prob_lower_90' in stats_result['cumulative_probs'][0]:
+                    fig_cumulative = create_collision_cumulative_plot_with_ci(stats_result)
+                else:
+                    fig_cumulative = create_collision_cumulative_plot(stats_result)
                 st.plotly_chart(fig_cumulative, use_container_width=True)
                 
                 fig_dist = create_distance_distribution_plot(stats_result)
