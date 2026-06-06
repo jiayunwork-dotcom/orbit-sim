@@ -329,7 +329,11 @@ elif page == "🛫 变轨机动设计":
             r1_lam = st.number_input("初始半径 r1 (km)", value=7000.0, min_value=6400.0, step=100.0)
             r2_lam = st.number_input("目标半径 r2 (km)", value=8000.0, min_value=6400.0, step=100.0)
             nu_diff = st.slider("真近点角差 (deg)", 10.0, 350.0, 90.0, step=10.0)
-            tof_hours = st.slider("转移时间 (小时)", 0.1, 24.0, 2.0, step=0.1)
+            tof_hours = st.slider("转移时间 (小时)", 0.1, 48.0, 1.5, step=0.1)
+            
+            a_transfer_est = (r1_lam + r2_lam) / 2
+            t_hohmann_est = np.pi * np.sqrt(a_transfer_est**3 / MU_EARTH) / 3600
+            st.info(f"💡 霍曼转移时间约为: {t_hohmann_est:.2f} 小时")
         
         with col2:
             r1_vec = np.array([r1_lam, 0, 0])
@@ -353,7 +357,7 @@ elif page == "🛫 变轨机动设计":
                 st.plotly_chart(fig, use_container_width=True)
             except Exception as ex:
                 st.error(f"求解失败: {str(ex)}")
-                st.info("尝试调整转移时间或轨道参数")
+                st.info("尝试调整转移时间（建议在霍曼转移时间附近）或增大转移时间范围")
 
 elif page == "📡 轨道摄动分析":
     st.header("轨道摄动分析")
@@ -547,11 +551,28 @@ elif page == "✨ 星座设计与覆盖":
     st.markdown("---")
     st.subheader("覆盖分析")
     
-    fig_heatmap = create_coverage_heatmap(None)
-    st.plotly_chart(fig_heatmap, use_container_width=True)
-    
-    fig_lat = create_coverage_by_latitude()
-    st.plotly_chart(fig_lat, use_container_width=True)
+    with st.spinner("正在计算覆盖分析..."):
+        fig_heatmap = create_coverage_heatmap(
+            constellation,
+            total_sats=total_sats,
+            num_planes=num_planes,
+            inclination=inclination_const,
+            altitude=altitude_const,
+            time_steps=12,
+            lat_points=12,
+            lon_points=24
+        )
+        st.plotly_chart(fig_heatmap, use_container_width=True)
+        
+        fig_lat = create_coverage_by_latitude(
+            total_sats=total_sats,
+            num_planes=num_planes,
+            inclination=inclination_const,
+            altitude=altitude_const,
+            time_steps=24,
+            lat_points=60
+        )
+        st.plotly_chart(fig_lat, use_container_width=True)
     
     with st.expander("星座参数详情"):
         st.write(f"**总卫星数:** {total_sats}")

@@ -180,7 +180,9 @@ def phasing_maneuver(r_original, delta_phase_deg, direction='forward'):
     }
 
 
-def solve_lambert(r1, r2, tof, prograde=True, max_iter=100, tol=1e-8):
+def solve_lambert(r1, r2, tof, prograde=True, max_iter=200, tol=1e-8):
+    from scipy.optimize import brentq
+    
     r1 = np.asarray(r1, dtype=np.float64)
     r2 = np.asarray(r2, dtype=np.float64)
     
@@ -188,7 +190,8 @@ def solve_lambert(r1, r2, tof, prograde=True, max_iter=100, tol=1e-8):
     r2_mag = np.linalg.norm(r2)
     
     cos_dnu = np.dot(r1, r2) / (r1_mag * r2_mag)
-    sin_dnu = np.cross(r1, r2)[2] / (r1_mag * r2_mag)
+    cross_prod = np.cross(r1, r2)
+    sin_dnu = np.linalg.norm(cross_prod) / (r1_mag * r2_mag)
     
     if not prograde:
         sin_dnu = -sin_dnu
@@ -197,56 +200,99 @@ def solve_lambert(r1, r2, tof, prograde=True, max_iter=100, tol=1e-8):
     if dnu < 0:
         dnu += 2 * np.pi
     
-    A = np.sin(dnu) * np.sqrt(r1_mag * r2_mag / (1 - cos_dnu))
+    A = np.sin(dnu) * np.sqrt(r1_mag * r2_mag / max(1 - cos_dnu, 1e-15))
     
-    def psi_function(psi):
-        c2 = 0.5
-        c3 = 1/6
-        if abs(psi) > 1e-6:
-            if psi > 0:
-                c2 = (1 - np.cos(np.sqrt(psi))) / psi
-                c3 = (np.sqrt(psi) - np.sin(np.sqrt(psi))) / (psi**1.5)
-            else:
-                c2 = (1 - np.cosh(np.sqrt(-psi))) / psi
-                c3 = (np.sinh(np.sqrt(-psi)) - np.sqrt(-psi)) / ((-psi)**1.5)
+    def compute_tof(psi):
+        if abs(psi) < 1e-6:
+            c2 = 0.5
+            c3 = 1.0 / 6.0
+        elif psi > 0:
+            sqrt_psi = np.sqrt(psi)
+            c2 = (1 - np.cos(sqrt_psi)) / psi
+            c3 = (sqrt_psi - np.sin(sqrt_psi)) / (psi**1.5)
+        else:
+            sqrt_npsi = np.sqrt(-psi)
+            c2 = (1 - np.cosh(sqrt_npsi)) / psi
+            c3 = (np.sinh(sqrt_npsi) - sqrt_npsi) / ((-psi)**1.5)
         
-        y = r1_mag + r2_mag + A * (psi * c3 - 1) / np.sqrt(c2)
+        y = r1_mag + r2_mag + A * (psi * c3 - 1.0) / np.sqrt(max(c2, 1e-15))
         
         if y <= 0:
-            return np.inf, np.inf
+            return 1e15
         
-        chi = np.sqrt(y / c2)
-        tof_calc = (chi**3 * c3 + A * np.sqrt(y)) / np.sqrt(MU_EARTH)
+        chi = np.sqrt(y / max(c2, 1e-15))
+        return (chi**3 * c3 + A * np.sqrt(y)) / np.sqrt(MU_EARTH)
+    
+    def tof_residual(psi):
+        return compute_tof(psi) - tof
+    
+    a_min = (r1_mag + r2_mag) / 4.0
+    t_min = 2 * np.pi * np.sqrt(a_min**3 / MU_EARTH)
+    
+    psi_low = -4 * np.pi**2
+    psi_high = 4 * np.pi**2
+    
+    try:
+        f_low = tof_residual(psi_low)
+        f_high = tof_residual(psi_high)
         
-        dtof_dpsi = (chi**3 * (c3 - 1.5 * c3 * c2 / c2 + 0.75 * chi**2 * c2**2) / (2 * c2) +
-                    A * (1 - y * c2 / (2 * c2)) / (4 * np.sqrt(y * c2))) / np.sqrt(MU_EARTH)
+        if f_low * f_high > 0:
+            for psi_guess in np.linspace(-10, 10, 200):
+                try:
+                    f_guess = tof_residual(psi_guess)
+                    if abs(f_guess) < 1000:
+                        if f_guess * f_low < 0:
+                            psi_high = psi_guess
+                            break
+                        elif f_guess * f_high < 0:
+                            psi_low = psi_guess
+                            break
+                except:
+                    continue
         
-        return tof_calc, dtof_dpsi
+        psi_sol = brentq(tof_residual, psi_low, psi_high, 
+                         maxiter=max_iter, xtol=tol)
+    except:
+        best_psi = 0.0
+        best_error = np.inf
+        for psi_guess in np.linspace(-20, 20, 400):
+            try:
+                error = abs(tof_residual(psi_guess))
+                if error < best_error:
+                    best_error = error
+                    best_psi = psi_guess
+            except:
+                continue
+        psi_sol = best_psi
     
-    psi = 0.0
-    for _ in range(max_iter):
-        tof_calc, dtof_dpsi = psi_function(psi)
-        if abs(tof_calc - tof) < tol:
-            break
-        psi = psi - (tof_calc - tof) / dtof_dpsi
+    psi = psi_sol
+    if abs(psi) < 1e-6:
+        c2 = 0.5
+        c3 = 1.0 / 6.0
+    elif psi > 0:
+        sqrt_psi = np.sqrt(psi)
+        c2 = (1 - np.cos(sqrt_psi)) / psi
+        c3 = (sqrt_psi - np.sin(sqrt_psi)) / (psi**1.5)
+    else:
+        sqrt_npsi = np.sqrt(-psi)
+        c2 = (1 - np.cosh(sqrt_npsi)) / psi
+        c3 = (np.sinh(sqrt_npsi) - sqrt_npsi) / ((-psi)**1.5)
     
-    c2 = 0.5
-    c3 = 1/6
-    if abs(psi) > 1e-6:
-        if psi > 0:
-            c2 = (1 - np.cos(np.sqrt(psi))) / psi
-            c3 = (np.sqrt(psi) - np.sin(np.sqrt(psi))) / (psi**1.5)
-        else:
-            c2 = (1 - np.cosh(np.sqrt(-psi))) / psi
-            c3 = (np.sinh(np.sqrt(-psi)) - np.sqrt(-psi)) / ((-psi)**1.5)
+    y = r1_mag + r2_mag + A * (psi * c3 - 1.0) / np.sqrt(max(c2, 1e-15))
     
-    y = r1_mag + r2_mag + A * (psi * c3 - 1) / np.sqrt(c2)
-    f = 1 - y / r1_mag
-    g = A * np.sqrt(y / MU_EARTH)
-    g_dot = 1 - y / r2_mag
+    if y <= 0:
+        y = r1_mag + r2_mag
     
-    v1 = (r2 - f * r1) / g
-    v2 = (g_dot * r2 - r1) / g
+    f = 1.0 - y / r1_mag
+    g = A * np.sqrt(max(y, 1e-10) / MU_EARTH)
+    g_dot = 1.0 - y / r2_mag
+    
+    if abs(g) < 1e-10:
+        v1 = np.sqrt(MU_EARTH / r1_mag) * np.array([0, 1, 0])
+        v2 = np.sqrt(MU_EARTH / r2_mag) * np.array([-np.sin(dnu), np.cos(dnu), 0])
+    else:
+        v1 = (r2 - f * r1) / g
+        v2 = (g_dot * r2 - r1) / g
     
     return v1, v2
 

@@ -145,7 +145,7 @@ def rk4_step(state, dt, perturbations, sun_dir=None):
     return state + (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
 
 
-def rk78_step(state, dt, perturbations, sun_dir=None, tol=1e-9):
+def rk78_step(state, dt, perturbations, sun_dir=None, tol=1e-6):
     r, v = state[:3], state[3:]
     
     def derivative(state):
@@ -154,7 +154,7 @@ def rk78_step(state, dt, perturbations, sun_dir=None, tol=1e-9):
         return np.concatenate([v, a])
     
     c = np.array([0., 1./12, 1./6, 1./4, 1./2, 5./6, 1./6, 2./3, 1./3, 1., 0., 1.])
-    a = [
+    a_coeffs = [
         [],
         [1./12],
         [1./24, 1./24],
@@ -171,30 +171,39 @@ def rk78_step(state, dt, perturbations, sun_dir=None, tol=1e-9):
     b7 = np.array([41./840, 0., 0., 0., 0., 34./105, 9./35, 9./35, 9./280, 9./280, 41./840, 0.])
     b8 = np.array([0., 0., 0., 0., 0., 34./105, 9./35, 9./35, 9./280, 9./280, 0., 41./840])
     
-    k = []
-    k.append(derivative(state))
+    current_dt = dt
+    max_attempts = 20
     
-    for i in range(1, 12):
-        y = state.copy()
-        for j in range(i):
-            y += dt * a[i][j] * k[j]
-        k.append(derivative(y))
+    for attempt in range(max_attempts):
+        k = []
+        k.append(derivative(state))
+        
+        for i in range(1, 12):
+            y = state.copy()
+            for j in range(i):
+                y += current_dt * a_coeffs[i][j] * k[j]
+            k.append(derivative(y))
+        
+        y7 = state.copy()
+        y8 = state.copy()
+        for i in range(12):
+            y7 += current_dt * b7[i] * k[i]
+            y8 += current_dt * b8[i] * k[i]
+        
+        err = np.linalg.norm(y8 - y7)
+        
+        if err <= tol:
+            return y8, current_dt
+        
+        if err < 1e-15:
+            return y8, current_dt
+        
+        new_dt = 0.9 * current_dt * (tol / max(err, 1e-15))**0.2
+        new_dt = max(new_dt, current_dt * 0.1)
+        new_dt = min(new_dt, current_dt * 10.0)
+        current_dt = new_dt
     
-    y7 = state.copy()
-    y8 = state.copy()
-    for i in range(12):
-        y7 += dt * b7[i] * k[i]
-        y8 += dt * b8[i] * k[i]
-    
-    err = np.linalg.norm(y8 - y7)
-    
-    if err > tol:
-        new_dt = 0.9 * dt * (tol / err)**0.2
-        return rk78_step(state, new_dt, perturbations, sun_dir, tol)
-    elif err < tol / 10:
-        new_dt = min(2 * dt, dt * 2)
-    
-    return y8
+    return y8, current_dt
 
 
 def propagate_numerical(elements, t_start, t_end, dt=10.0,
@@ -210,20 +219,27 @@ def propagate_numerical(elements, t_start, t_end, dt=10.0,
     states = [state.copy()]
     
     t = t_start
+    current_dt = dt
     
     while t < t_end:
-        current_dt = min(dt, t_end - t)
+        step_dt = min(current_dt, t_end - t)
         
         if method == 'rk4':
-            state = rk4_step(state, current_dt, perturbations)
+            state = rk4_step(state, step_dt, perturbations)
+            actual_dt = step_dt
         elif method == 'rk78':
-            state = rk78_step(state, current_dt, perturbations)
+            state, actual_dt = rk78_step(state, step_dt, perturbations)
         else:
             raise ValueError(f"Unknown method: {method}")
         
-        t += current_dt
+        t += actual_dt
         times.append(t)
         states.append(state.copy())
+        
+        if method == 'rk78':
+            current_dt = actual_dt * 1.2
+            current_dt = min(current_dt, dt * 5)
+            current_dt = max(current_dt, dt * 0.1)
         
         if events is not None:
             for event in events:

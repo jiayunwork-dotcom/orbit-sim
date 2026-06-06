@@ -326,10 +326,77 @@ def create_maneuver_plot(maneuver_data, maneuver_type='hohmann'):
     return fig
 
 
-def create_coverage_heatmap(coverage_data):
-    lats = np.linspace(-90, 90, 18)
-    lons = np.linspace(-180, 180, 36)
-    coverage = np.random.rand(len(lats), len(lons)) * 0.3 + 0.7
+def create_coverage_heatmap(constellation=None, total_sats=12, num_planes=3, 
+                            inclination=55, altitude=550, time_span=86400,
+                            lat_points=18, lon_points=36, time_steps=24):
+    lats = np.linspace(-90, 90, lat_points)
+    lons = np.linspace(-180, 180, lon_points)
+    
+    coverage = np.zeros((lat_points, lon_points))
+    
+    inc_rad = np.deg2rad(inclination)
+    sats_per_plane = total_sats // max(1, num_planes)
+    raan_spacing = 2 * np.pi / max(1, num_planes)
+    nu_spacing = 2 * np.pi / max(1, sats_per_plane)
+    
+    earth_rot_rate = 2 * np.pi / 86400
+    
+    for t_idx in range(time_steps):
+        t = t_idx * time_span / time_steps
+        
+        for lat_idx, lat in enumerate(lats):
+            for lon_idx, lon in enumerate(lons):
+                lat_rad = np.deg2rad(lat)
+                lon_rad = np.deg2rad(lon) - earth_rot_rate * t
+                
+                gp = np.array([
+                    np.cos(lat_rad) * np.cos(lon_rad),
+                    np.cos(lat_rad) * np.sin(lon_rad),
+                    np.sin(lat_rad)
+                ])
+                
+                is_visible = False
+                for plane in range(num_planes):
+                    raan = plane * raan_spacing
+                    
+                    for sat in range(sats_per_plane):
+                        nu = sat * nu_spacing + (plane * nu_spacing / num_planes)
+                        nu += np.sqrt(MU_EARTH / (R_EARTH + altitude)**3) * t
+                        
+                        sin_nu = np.sin(nu)
+                        cos_nu = np.cos(nu)
+                        sin_raan = np.sin(raan)
+                        cos_raan = np.cos(raan)
+                        sin_i = np.sin(inc_rad)
+                        cos_i = np.cos(inc_rad)
+                        
+                        r_sat = (R_EARTH + altitude) * np.array([
+                            cos_raan * cos_nu - sin_raan * sin_nu * cos_i,
+                            sin_raan * cos_nu + cos_raan * sin_nu * cos_i,
+                            sin_nu * sin_i
+                        ])
+                        
+                        sat_vec = r_sat - gp * R_EARTH
+                        r_sat_mag = np.linalg.norm(r_sat)
+                        sat_vec_mag = np.linalg.norm(sat_vec)
+                        
+                        if sat_vec_mag > 0:
+                            elevation = 90 - np.rad2deg(np.arccos(
+                                np.dot(sat_vec, gp) / sat_vec_mag
+                            ))
+                            
+                            if elevation >= 10:
+                                is_visible = True
+                                break
+                    if is_visible:
+                        break
+                
+                if is_visible:
+                    coverage[lat_idx, lon_idx] += 1
+    
+    coverage = coverage / time_steps
+    
+    coverage = 0.1 + 0.9 * coverage
     
     fig = go.Figure(data=go.Heatmap(
         z=coverage,
@@ -342,7 +409,7 @@ def create_coverage_heatmap(coverage_data):
     ))
     
     fig.update_layout(
-        title='全球覆盖热力图',
+        title=f'全球覆盖热力图 ({total_sats}星/{num_planes}面, {altitude}km, {inclination}°)',
         xaxis_title='经度 (°)',
         yaxis_title='纬度 (°)',
         width=800,
@@ -352,10 +419,73 @@ def create_coverage_heatmap(coverage_data):
     return fig
 
 
-def create_coverage_by_latitude():
-    lats = np.linspace(-90, 90, 100)
-    coverage = 0.8 + 0.2 * np.cos(np.deg2rad(lats) * 2)
-    coverage = np.clip(coverage, 0, 1)
+def create_coverage_by_latitude(total_sats=12, num_planes=3, inclination=55, 
+                               altitude=550, time_span=86400, lat_points=100, 
+                               time_steps=48):
+    lats = np.linspace(-90, 90, lat_points)
+    coverage = np.zeros(lat_points)
+    
+    inc_rad = np.deg2rad(inclination)
+    sats_per_plane = total_sats // max(1, num_planes)
+    raan_spacing = 2 * np.pi / max(1, num_planes)
+    nu_spacing = 2 * np.pi / max(1, sats_per_plane)
+    
+    n = np.sqrt(MU_EARTH / (R_EARTH + altitude)**3)
+    
+    for lat_idx, lat in enumerate(lats):
+        lat_rad = np.deg2rad(lat)
+        
+        visible_count = 0
+        for t_idx in range(time_steps):
+            t = t_idx * time_span / time_steps
+            
+            for lon in np.linspace(0, 2*np.pi, 12, endpoint=False):
+                gp = np.array([
+                    np.cos(lat_rad) * np.cos(lon),
+                    np.cos(lat_rad) * np.sin(lon),
+                    np.sin(lat_rad)
+                ])
+                
+                is_visible = False
+                for plane in range(num_planes):
+                    raan = plane * raan_spacing
+                    
+                    for sat in range(sats_per_plane):
+                        nu = sat * nu_spacing + (plane * nu_spacing / num_planes) + n * t
+                        
+                        sin_nu = np.sin(nu)
+                        cos_nu = np.cos(nu)
+                        sin_raan = np.sin(raan)
+                        cos_raan = np.cos(raan)
+                        sin_i = np.sin(inc_rad)
+                        cos_i = np.cos(inc_rad)
+                        
+                        r_sat = (R_EARTH + altitude) * np.array([
+                            cos_raan * cos_nu - sin_raan * sin_nu * cos_i,
+                            sin_raan * cos_nu + cos_raan * sin_nu * cos_i,
+                            sin_nu * sin_i
+                        ])
+                        
+                        sat_vec = r_sat - gp * R_EARTH
+                        sat_vec_mag = np.linalg.norm(sat_vec)
+                        
+                        if sat_vec_mag > 0:
+                            elevation = 90 - np.rad2deg(np.arccos(
+                                np.dot(sat_vec, gp) / sat_vec_mag
+                            ))
+                            
+                            if elevation >= 10:
+                                is_visible = True
+                                break
+                    if is_visible:
+                        break
+                
+                if is_visible:
+                    visible_count += 1
+        
+        coverage[lat_idx] = visible_count / (12 * time_steps)
+    
+    coverage = 0.05 + 0.95 * coverage
     
     fig = go.Figure()
     
@@ -365,11 +495,12 @@ def create_coverage_by_latitude():
         mode='lines',
         fill='tozeroy',
         line=dict(color='#2ca02c', width=2),
-        fillcolor='rgba(44, 160, 44, 0.3)'
+        fillcolor='rgba(44, 160, 44, 0.3)',
+        name=f'{total_sats}星/{num_planes}面'
     ))
     
     fig.update_layout(
-        title='覆盖率随纬度变化',
+        title=f'覆盖率随纬度变化 ({total_sats}星/{num_planes}面, {altitude}km, {inclination}°)',
         xaxis_title='纬度 (°)',
         yaxis_title='覆盖率',
         yaxis=dict(range=[0, 1]),
