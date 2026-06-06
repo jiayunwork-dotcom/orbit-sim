@@ -591,23 +591,32 @@ def simulate_debris_field(vehicle, initial_conditions, breakup_threshold_pa=5000
         lon_span = np.max(impact_lons) - np.min(impact_lons)
         lat_span = np.max(impact_lats) - np.min(impact_lats)
         
-        coords = np.column_stack([impact_lons, impact_lats])
-        mean_coord = np.array([mean_lon, mean_lat])
-        centered = coords - mean_coord
+        mean_lat_rad = np.deg2rad(mean_lat)
+        km_per_deg_lat = 111.32
+        km_per_deg_lon = 111.32 * np.cos(mean_lat_rad)
         
-        if len(centered) >= 2:
-            cov = np.cov(centered.T)
+        east_km = (impact_lons - mean_lon) * km_per_deg_lon
+        north_km = (impact_lats - mean_lat) * km_per_deg_lat
+        
+        coords_km = np.column_stack([east_km, north_km])
+        
+        if len(coords_km) >= 2:
+            cov = np.cov(coords_km.T)
             eigenvalues, eigenvectors = np.linalg.eig(cov)
             
             sorted_indices = np.argsort(eigenvalues)[::-1]
             eigenvalues = eigenvalues[sorted_indices]
             eigenvectors = eigenvectors[:, sorted_indices]
             
-            major_axis_length = 2 * np.sqrt(eigenvalues[0]) * 1.0 if eigenvalues[0] > 0 else 0
-            minor_axis_length = 2 * np.sqrt(eigenvalues[1]) * 1.0 if eigenvalues[1] > 0 else 0
+            n_std = 1.5
+            major_axis_km = 2 * np.sqrt(eigenvalues[0]) * n_std if eigenvalues[0] > 0 else 0
+            minor_axis_km = 2 * np.sqrt(eigenvalues[1]) * n_std if eigenvalues[1] > 0 else 0
             
             angle_rad = np.arctan2(eigenvectors[1, 0], eigenvectors[0, 0])
             angle_deg = np.rad2deg(angle_rad)
+            
+            major_axis_length = major_axis_km / km_per_deg_lat
+            minor_axis_length = minor_axis_km / km_per_deg_lat
         else:
             major_axis_length = lon_span
             minor_axis_length = lat_span
@@ -642,17 +651,68 @@ def simulate_debris_field(vehicle, initial_conditions, breakup_threshold_pa=5000
     return result
 
 
-def simulate_reentry_fast(vehicle, initial_conditions, t_max=2000.0, dt_eval=5.0):
+def fast_reentry_equations(t, state, vehicle):
+    r, lon, lat, v, gamma, chi = state
+    
+    altitude = r - R_EARTH
+    altitude_clamped = np.clip(altitude, 0, 120)
+    
+    rho, T_atm, p = standard_atmosphere_1976(altitude_clamped)
+    
+    M = mach_number(v * 1000, T_atm)
+    
+    Cd = vehicle.Cd0
+    
+    gamma_rad = np.deg2rad(gamma)
+    chi_rad = np.deg2rad(chi)
+    lat_rad = np.deg2rad(lat)
+    
+    g = MU_EARTH / (r ** 2)
+    
+    q_dyn = 0.5 * rho * (v * 1000) ** 2
+    D = q_dyn * vehicle.reference_area * Cd / vehicle.mass
+    D_km = D / 1000.0
+    
+    dr_dt = v * np.sin(gamma_rad)
+    dlon_dt = (v * np.cos(gamma_rad) * np.sin(chi_rad)) / (r * np.cos(lat_rad))
+    dlat_dt = (v * np.cos(gamma_rad) * np.cos(chi_rad)) / r
+    
+    omega = OMEGA_EARTH
+    a_coriolis_1 = -2 * omega * v * np.cos(gamma_rad) * np.sin(chi_rad) * np.sin(lat_rad)
+    a_cent_1 = omega ** 2 * r * np.cos(lat_rad) ** 2 * np.sin(gamma_rad)
+    
+    dv_dt = -D_km - g * np.sin(gamma_rad) + a_coriolis_1 + a_cent_1
+    
+    a_coriolis_2 = 2 * omega * v * np.cos(gamma_rad) * np.cos(chi_rad) * np.sin(lat_rad)
+    a_cent_2 = omega ** 2 * r * np.cos(lat_rad) * np.sin(lat_rad) * np.cos(gamma_rad) * np.cos(chi_rad)
+    
+    dgamma_dt = (-g * np.cos(gamma_rad) / v + 
+                 v * np.cos(gamma_rad) / r + 
+                 a_coriolis_2 / v + a_cent_2 / v)
+    
+    a_coriolis_3 = 2 * omega * v * np.cos(gamma_rad) * np.sin(chi_rad) * np.cos(lat_rad)
+    a_cent_3 = -omega ** 2 * r * np.cos(lat_rad) * np.sin(lat_rad) * np.cos(gamma_rad) * np.sin(chi_rad)
+    
+    dchi_dt = (v * np.cos(gamma_rad) * np.sin(chi_rad) * np.tan(lat_rad) / r +
+               a_coriolis_3 / (v * np.cos(gamma_rad)) + a_cent_3 / (v * np.cos(gamma_rad)))
+    
+    lon_deg = np.rad2deg(dlon_dt)
+    lat_deg = np.rad2deg(dlat_dt)
+    gamma_deg = np.rad2deg(dgamma_dt)
+    chi_deg = np.rad2deg(dchi_dt)
+    
+    return [dr_dt, lon_deg, lat_deg, dv_dt, gamma_deg, chi_deg]
+
+
+def simulate_reentry_fast(vehicle, initial_conditions, t_max=2000.0):
     r0 = R_EARTH + initial_conditions.altitude
     lon0 = initial_conditions.longitude
     lat0 = initial_conditions.latitude
     v0 = initial_conditions.velocity
     gamma0 = initial_conditions.flight_path_angle
     chi0 = initial_conditions.heading_angle
-    m0 = vehicle.mass
-    T_surf0 = 250.0
     
-    state0 = [r0, lon0, lat0, v0, gamma0, chi0, m0, T_surf0]
+    state0 = [r0, lon0, lat0, v0, gamma0, chi0]
     
     def event_impact(t, state):
         return state[0] - R_EARTH - 0.1
@@ -660,18 +720,15 @@ def simulate_reentry_fast(vehicle, initial_conditions, t_max=2000.0, dt_eval=5.0
     event_impact.terminal = True
     event_impact.direction = -1
     
-    t_eval = np.arange(0, t_max, dt_eval)
-    
     sol = solve_ivp(
-        reentry_equations,
+        fast_reentry_equations,
         [0, t_max],
         state0,
-        args=(vehicle, 'ballistic', 0.0, 0.0),
+        args=(vehicle,),
         method='RK23',
-        t_eval=t_eval,
         events=event_impact,
-        rtol=1e-5,
-        atol=1e-7
+        rtol=1e-3,
+        atol=1e-5
     )
     
     if not sol.success:

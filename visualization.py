@@ -1026,13 +1026,17 @@ def create_debris_field_plot(debris_field_result):
     if debris_field_result['major_axis_length'] > 0 and debris_field_result['minor_axis_length'] > 0:
         mean_lon = debris_field_result['mean_impact_lon']
         mean_lat = debris_field_result['mean_impact_lat']
-        major = debris_field_result['major_axis_length']
-        minor = debris_field_result['minor_axis_length']
+        major_deg = debris_field_result['major_axis_length']
+        minor_deg = debris_field_result['minor_axis_length']
         angle = debris_field_result['ellipse_angle_deg']
         
+        mean_lat_rad = np.deg2rad(mean_lat)
+        km_per_deg_lat = 111.32
+        km_per_deg_lon = 111.32 * np.cos(mean_lat_rad)
+        
         theta = np.linspace(0, 2 * np.pi, 100)
-        ellipse_x = major / 2 * np.cos(theta)
-        ellipse_y = minor / 2 * np.sin(theta)
+        ellipse_east_km = major_deg / 2 * km_per_deg_lat * np.cos(theta)
+        ellipse_north_km = minor_deg / 2 * km_per_deg_lat * np.sin(theta)
         
         angle_rad = np.deg2rad(angle)
         rot_matrix = np.array([
@@ -1040,9 +1044,10 @@ def create_debris_field_plot(debris_field_result):
             [np.sin(angle_rad), np.cos(angle_rad)]
         ])
         
-        rotated = np.dot(rot_matrix, np.array([ellipse_x, ellipse_y]))
-        ellipse_lon = mean_lon + rotated[0]
-        ellipse_lat = mean_lat + rotated[1]
+        rotated_km = np.dot(rot_matrix, np.array([ellipse_east_km, ellipse_north_km]))
+        
+        ellipse_lon = mean_lon + rotated_km[0] / km_per_deg_lon
+        ellipse_lat = mean_lat + rotated_km[1] / km_per_deg_lat
         
         fig.add_trace(go.Scatter(
             x=ellipse_lon,
