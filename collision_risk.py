@@ -96,32 +96,40 @@ def project_covariance_to_b_plane(cov1, cov2, projection_matrix):
     return projected
 
 
-def compute_collision_probability(b_plane_pos, cov_b_plane, collision_radius, grid_size=100):
+def compute_collision_probability(b_plane_pos, cov_b_plane, collision_radius, grid_size=200):
     det = np.linalg.det(cov_b_plane)
-    if det <= 0:
+    if det <= 0 or collision_radius <= 0:
         return 0.0
     
     inv_cov = np.linalg.inv(cov_b_plane)
     norm_factor = 1.0 / (2 * np.pi * np.sqrt(det))
     
-    max_sigma = 5
+    max_sigma = 10
     sigma_max = max(np.sqrt(cov_b_plane[0, 0]), np.sqrt(cov_b_plane[1, 1]))
-    range_max = max(collision_radius, max_sigma * sigma_max)
     
-    grid_range = np.linspace(-range_max, range_max, grid_size)
-    dx = grid_range[1] - grid_range[0]
+    dist_from_center = np.linalg.norm(b_plane_pos)
     
-    prob = 0.0
-    for i, x in enumerate(grid_range):
-        for j, y in enumerate(grid_range):
-            r_sq = x**2 + y**2
-            if r_sq <= collision_radius**2:
-                dx_ = x - b_plane_pos[0]
-                dy_ = y - b_plane_pos[1]
-                exponent = -0.5 * (dx_ * inv_cov[0, 0] * dx_ + 
-                                   2 * dx_ * inv_cov[0, 1] * dy_ + 
-                                   dy_ * inv_cov[1, 1] * dy_)
-                prob += norm_factor * np.exp(exponent) * dx * dx
+    range_needed = max(collision_radius, dist_from_center + max_sigma * sigma_max)
+    
+    x = np.linspace(-range_needed, range_needed, grid_size)
+    y = np.linspace(-range_needed, range_needed, grid_size)
+    dx = x[1] - x[0]
+    dy = y[1] - y[0]
+    
+    X, Y = np.meshgrid(x, y)
+    
+    in_circle = (X**2 + Y**2) <= collision_radius**2
+    
+    dX = X - b_plane_pos[0]
+    dY = Y - b_plane_pos[1]
+    
+    exponent = -0.5 * (dX * inv_cov[0, 0] * dX + 
+                       2 * dX * inv_cov[0, 1] * dY + 
+                       dY * inv_cov[1, 1] * dY)
+    
+    pdf = norm_factor * np.exp(exponent)
+    
+    prob = np.sum(pdf[in_circle]) * dx * dy
     
     return min(prob, 1.0)
 

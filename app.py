@@ -1526,18 +1526,18 @@ elif page == "☄️ 碰撞风险评估":
             argp1 = st.number_input("近地点幅角 ω₁ (°)", value=0.0, min_value=0.0, max_value=360.0, step=1.0, key="cr_argp1")
             nu1 = st.number_input("真近点角 ν₁ (°)", value=0.0, min_value=0.0, max_value=360.0, step=1.0, key="cr_nu1")
             r1_radius = st.number_input("等效半径 r₁ (m)", value=5.0, min_value=0.1, step=0.5, key="cr_r1")
-            sigma1 = st.number_input("位置不确定性 σ₁ (km)", value=0.1, min_value=0.001, step=0.01, key="cr_sigma1")
+            sigma1 = st.number_input("位置不确定性 σ₁ (km)", value=0.05, min_value=0.001, step=0.01, key="cr_sigma1")
             
             st.markdown("---")
             st.markdown("#### 物体2（碎片/目标）")
-            a2 = st.number_input("半长轴 a₂ (km)", value=7001.0, min_value=6400.0, step=100.0, key="cr_a2")
-            e2 = st.number_input("偏心率 e₂", value=0.002, min_value=0.0, max_value=0.5, step=0.001, key="cr_e2")
-            i2 = st.number_input("倾角 i₂ (°)", value=97.6, min_value=0.0, max_value=180.0, step=1.0, key="cr_i2")
-            raan2 = st.number_input("RAAN Ω₂ (°)", value=0.5, min_value=0.0, max_value=360.0, step=1.0, key="cr_raan2")
+            a2 = st.number_input("半长轴 a₂ (km)", value=7000.05, min_value=6400.0, step=100.0, key="cr_a2")
+            e2 = st.number_input("偏心率 e₂", value=0.001, min_value=0.0, max_value=0.5, step=0.001, key="cr_e2")
+            i2 = st.number_input("倾角 i₂ (°)", value=97.5, min_value=0.0, max_value=180.0, step=1.0, key="cr_i2")
+            raan2 = st.number_input("RAAN Ω₂ (°)", value=0.0, min_value=0.0, max_value=360.0, step=1.0, key="cr_raan2")
             argp2 = st.number_input("近地点幅角 ω₂ (°)", value=0.0, min_value=0.0, max_value=360.0, step=1.0, key="cr_argp2")
-            nu2 = st.number_input("真近点角 ν₂ (°)", value=30.0, min_value=0.0, max_value=360.0, step=1.0, key="cr_nu2")
+            nu2 = st.number_input("真近点角 ν₂ (°)", value=0.05, min_value=0.0, max_value=360.0, step=1.0, key="cr_nu2")
             r2_radius = st.number_input("等效半径 r₂ (m)", value=3.0, min_value=0.1, step=0.5, key="cr_r2")
-            sigma2 = st.number_input("位置不确定性 σ₂ (km)", value=0.15, min_value=0.001, step=0.01, key="cr_sigma2")
+            sigma2 = st.number_input("位置不确定性 σ₂ (km)", value=0.05, min_value=0.001, step=0.01, key="cr_sigma2")
             
             st.markdown("---")
             st.markdown("#### 分析参数")
@@ -1677,16 +1677,67 @@ elif page == "☄️ 碰撞风险评估":
             argp_main = st.number_input("近地点幅角 (°)", value=0.0, min_value=0.0, max_value=360.0, step=1.0, key="batch_argp_main")
             nu_main = st.number_input("真近点角 (°)", value=0.0, min_value=0.0, max_value=360.0, step=1.0, key="batch_nu_main")
             r_main_radius = st.number_input("等效半径 (m)", value=5.0, min_value=0.1, step=0.5, key="batch_r_main")
-            sigma_main = st.number_input("位置不确定性 (km)", value=0.1, min_value=0.001, step=0.01, key="batch_sigma_main")
+            sigma_main = st.number_input("位置不确定性 (km)", value=0.05, min_value=0.001, step=0.01, key="batch_sigma_main")
             
             st.markdown("---")
             st.markdown("#### 筛查参数")
-            num_debris = st.slider("碎片目标数量", 1, 20, 5, key="batch_num_debris")
+            num_debris = st.slider("碎片目标数量 (1-20)", 1, 20, 3, key="batch_num_debris")
             batch_pred_days = st.slider("预测时长 (天)", 1, 30, 7, key="batch_pred_days")
             batch_prob_threshold = st.number_input("预警阈值", value=1e-4, format="%.1e", key="batch_threshold")
             batch_maneuver_offset = st.slider("规避提前时间 (小时)", 1, 24, 6, key="batch_maneuver_offset")
             
-            if st.button("生成示例碎片并筛查", type="primary", key="batch_run"):
+            st.markdown("---")
+            st.markdown("#### 碎片参数输入")
+            
+            input_mode = st.radio("碎片输入方式", ["手动输入", "随机生成示例"], key="batch_input_mode", horizontal=True)
+            
+            if input_mode == "手动输入":
+                st.info(f"请在下方输入 {num_debris} 个碎片的参数")
+            else:
+                if st.button("填充随机示例数据", key="batch_fill_random"):
+                    np.random.seed(42)
+                    for i in range(num_debris):
+                        st.session_state[f'batch_a_d_{i}'] = a_main + np.random.uniform(-5, 5)
+                        st.session_state[f'batch_e_d_{i}'] = np.random.uniform(0, 0.005)
+                        st.session_state[f'batch_i_d_{i}'] = i_main + np.random.uniform(-0.5, 0.5)
+                        st.session_state[f'batch_raan_d_{i}'] = np.random.uniform(0, 360)
+                        st.session_state[f'batch_argp_d_{i}'] = np.random.uniform(0, 360)
+                        st.session_state[f'batch_nu_d_{i}'] = np.random.uniform(0, 360)
+                        st.session_state[f'batch_r_d_{i}'] = np.random.uniform(1, 5)
+                        st.session_state[f'batch_sigma_d_{i}'] = np.random.uniform(0.02, 0.1)
+                    st.success("已填充随机示例数据")
+            
+            with st.expander("展开/折叠 碎片参数详情", expanded=True):
+                for i in range(num_debris):
+                    st.markdown(f"##### 碎片 #{i+1}")
+                    col_d1, col_d2 = st.columns(2)
+                    with col_d1:
+                        st.number_input(f"半长轴 a_{i+1} (km)", value=st.session_state.get(f'batch_a_d_{i}', 7000.0 + i*0.5), 
+                                       min_value=6400.0, step=10.0, key=f'batch_a_d_{i}')
+                        st.number_input(f"偏心率 e_{i+1}", value=st.session_state.get(f'batch_e_d_{i}', 0.001 + i*0.001), 
+                                       min_value=0.0, max_value=0.5, step=0.001, key=f'batch_e_d_{i}')
+                        st.number_input(f"倾角 i_{i+1} (°)", value=st.session_state.get(f'batch_i_d_{i}', 97.5 + i*0.1), 
+                                       min_value=0.0, max_value=180.0, step=0.5, key=f'batch_i_d_{i}')
+                    with col_d2:
+                        st.number_input(f"RAAN Ω_{i+1} (°)", value=st.session_state.get(f'batch_raan_d_{i}', 0.0 + i*5.0), 
+                                       min_value=0.0, max_value=360.0, step=1.0, key=f'batch_raan_d_{i}')
+                        st.number_input(f"近地点幅角 ω_{i+1} (°)", value=st.session_state.get(f'batch_argp_d_{i}', 0.0 + i*10.0), 
+                                       min_value=0.0, max_value=360.0, step=1.0, key=f'batch_argp_d_{i}')
+                        st.number_input(f"真近点角 ν_{i+1} (°)", value=st.session_state.get(f'batch_nu_d_{i}', 0.0 + i*15.0), 
+                                       min_value=0.0, max_value=360.0, step=1.0, key=f'batch_nu_d_{i}')
+                    
+                    col_d3, col_d4 = st.columns(2)
+                    with col_d3:
+                        st.number_input(f"等效半径 r_{i+1} (m)", value=st.session_state.get(f'batch_r_d_{i}', 3.0), 
+                                       min_value=0.1, step=0.5, key=f'batch_r_d_{i}')
+                    with col_d4:
+                        st.number_input(f"位置不确定性 σ_{i+1} (km)", value=st.session_state.get(f'batch_sigma_d_{i}', 0.05), 
+                                       min_value=0.001, step=0.01, key=f'batch_sigma_d_{i}')
+                    
+                    if i < num_debris - 1:
+                        st.markdown("---")
+            
+            if st.button("开始批量筛查", type="primary", key="batch_run"):
                 with st.spinner(f"正在对 {num_debris} 个目标进行碰撞风险筛查..."):
                     try:
                         el_main = KeplerElements(a_main, e_main, i_main, raan_main, argp_main, nu_main, units='km_deg')
@@ -1695,23 +1746,23 @@ elif page == "☄️ 碰撞风险评估":
                         debris_list = []
                         debris_cov_list = []
                         debris_radii = []
-                        np.random.seed(42)
                         
                         for i in range(num_debris):
-                            a_d = a_main + np.random.uniform(-50, 50)
-                            e_d = np.random.uniform(0, 0.01)
-                            i_d = i_main + np.random.uniform(-2, 2)
-                            raan_d = np.random.uniform(0, 360)
-                            argp_d = np.random.uniform(0, 360)
-                            nu_d = np.random.uniform(0, 360)
+                            a_d = st.session_state[f'batch_a_d_{i}']
+                            e_d = st.session_state[f'batch_e_d_{i}']
+                            i_d = st.session_state[f'batch_i_d_{i}']
+                            raan_d = st.session_state[f'batch_raan_d_{i}']
+                            argp_d = st.session_state[f'batch_argp_d_{i}']
+                            nu_d = st.session_state[f'batch_nu_d_{i}']
                             
                             el_d = KeplerElements(a_d, e_d, i_d, raan_d, argp_d, nu_d, units='km_deg')
                             debris_list.append(el_d)
                             
-                            sigma_d = np.random.uniform(0.05, 0.2)
+                            sigma_d = st.session_state[f'batch_sigma_d_{i}']
                             debris_cov_list.append(get_position_covariance(sigma_d))
                             
-                            debris_radii.append(np.random.uniform(1, 10) / 1000.0)
+                            r_d = st.session_state[f'batch_r_d_{i}']
+                            debris_radii.append(r_d / 1000.0)
                         
                         batch_results = batch_screening(
                             el_main, debris_list, cov_main, debris_cov_list,
@@ -1735,11 +1786,13 @@ elif page == "☄️ 碰撞风险评估":
                             st.success("筛查完成! 所有目标碰撞概率均在安全范围内")
                     except Exception as ex:
                         st.error(f"筛查失败: {str(ex)}")
+                        import traceback
+                        st.error(traceback.format_exc())
                         st.session_state['batch_done'] = False
         
         with col_batch_results:
             if not st.session_state.get('batch_done', False):
-                st.info("请设置参数后点击 '生成示例碎片并筛查' 按钮")
+                st.info("请设置参数后点击 '开始批量筛查' 按钮")
             else:
                 batch_results = st.session_state['batch_results']
                 
@@ -1781,42 +1834,96 @@ elif page == "☄️ 碰撞风险评估":
             a_stats = st.number_input("半长轴 (km)", value=7000.0, min_value=6400.0, step=100.0, key="stats_a")
             e_stats = st.number_input("偏心率", value=0.001, min_value=0.0, max_value=0.5, step=0.001, key="stats_e")
             i_stats = st.number_input("倾角 (°)", value=97.5, min_value=0.0, max_value=180.0, step=1.0, key="stats_i")
-            sigma_stats = st.number_input("位置不确定性 (km)", value=0.1, min_value=0.001, step=0.01, key="stats_sigma")
+            raan_stats = st.number_input("RAAN (°)", value=0.0, min_value=0.0, max_value=360.0, step=1.0, key="stats_raan")
+            argp_stats = st.number_input("近地点幅角 (°)", value=0.0, min_value=0.0, max_value=360.0, step=1.0, key="stats_argp")
+            nu_stats = st.number_input("真近点角 (°)", value=0.0, min_value=0.0, max_value=360.0, step=1.0, key="stats_nu")
+            r_stats_radius = st.number_input("等效半径 (m)", value=5.0, min_value=0.1, step=0.5, key="stats_r_main")
+            sigma_stats = st.number_input("位置不确定性 (km)", value=0.05, min_value=0.001, step=0.01, key="stats_sigma")
             
             st.markdown("---")
             st.markdown("#### 统计参数")
-            num_debris_stats = st.slider("碎片数量", 5, 50, 20, key="stats_num_debris")
+            num_debris_stats = st.slider("碎片数量 (1-20)", 1, 20, 5, key="stats_num_debris")
+            
+            st.markdown("---")
+            st.markdown("#### 碎片参数输入")
+            
+            stats_input_mode = st.radio("碎片输入方式", ["手动输入", "随机生成示例"], 
+                                       key="stats_input_mode", horizontal=True)
+            
+            if stats_input_mode == "随机生成示例":
+                if st.button("填充随机示例数据", key="stats_fill_random"):
+                    np.random.seed(123)
+                    for i in range(num_debris_stats):
+                        st.session_state[f'stats_a_d_{i}'] = a_stats + np.random.uniform(-20, 20)
+                        st.session_state[f'stats_e_d_{i}'] = np.random.uniform(0, 0.01)
+                        st.session_state[f'stats_i_d_{i}'] = i_stats + np.random.uniform(-1, 1)
+                        st.session_state[f'stats_raan_d_{i}'] = np.random.uniform(0, 360)
+                        st.session_state[f'stats_argp_d_{i}'] = np.random.uniform(0, 360)
+                        st.session_state[f'stats_nu_d_{i}'] = np.random.uniform(0, 360)
+                        st.session_state[f'stats_r_d_{i}'] = np.random.uniform(1, 5)
+                        st.session_state[f'stats_sigma_d_{i}'] = np.random.uniform(0.02, 0.1)
+                    st.success("已填充随机示例数据")
+            
+            with st.expander("展开/折叠 碎片参数详情", expanded=False):
+                for i in range(num_debris_stats):
+                    st.markdown(f"##### 碎片 #{i+1}")
+                    col_s1, col_s2 = st.columns(2)
+                    with col_s1:
+                        st.number_input(f"半长轴 a_{i+1} (km)", value=st.session_state.get(f'stats_a_d_{i}', 7000.0 + i*2.0), 
+                                       min_value=6400.0, step=10.0, key=f'stats_a_d_{i}')
+                        st.number_input(f"偏心率 e_{i+1}", value=st.session_state.get(f'stats_e_d_{i}', 0.001 + i*0.002), 
+                                       min_value=0.0, max_value=0.5, step=0.001, key=f'stats_e_d_{i}')
+                        st.number_input(f"倾角 i_{i+1} (°)", value=st.session_state.get(f'stats_i_d_{i}', 97.5 + i*0.2), 
+                                       min_value=0.0, max_value=180.0, step=0.5, key=f'stats_i_d_{i}')
+                    with col_s2:
+                        st.number_input(f"RAAN Ω_{i+1} (°)", value=st.session_state.get(f'stats_raan_d_{i}', 0.0 + i*10.0), 
+                                       min_value=0.0, max_value=360.0, step=1.0, key=f'stats_raan_d_{i}')
+                        st.number_input(f"近地点幅角 ω_{i+1} (°)", value=st.session_state.get(f'stats_argp_d_{i}', 0.0 + i*20.0), 
+                                       min_value=0.0, max_value=360.0, step=1.0, key=f'stats_argp_d_{i}')
+                        st.number_input(f"真近点角 ν_{i+1} (°)", value=st.session_state.get(f'stats_nu_d_{i}', 0.0 + i*30.0), 
+                                       min_value=0.0, max_value=360.0, step=1.0, key=f'stats_nu_d_{i}')
+                    
+                    col_s3, col_s4 = st.columns(2)
+                    with col_s3:
+                        st.number_input(f"等效半径 r_{i+1} (m)", value=st.session_state.get(f'stats_r_d_{i}', 3.0), 
+                                       min_value=0.1, step=0.5, key=f'stats_r_d_{i}')
+                    with col_s4:
+                        st.number_input(f"位置不确定性 σ_{i+1} (km)", value=st.session_state.get(f'stats_sigma_d_{i}', 0.05), 
+                                       min_value=0.001, step=0.01, key=f'stats_sigma_d_{i}')
+                    
+                    if i < num_debris_stats - 1:
+                        st.markdown("---")
             
             if st.button("生成碰撞统计数据", type="primary", key="stats_run"):
                 with st.spinner("正在生成碰撞统计数据..."):
                     try:
-                        el_main_stats = KeplerElements(a_stats, e_stats, i_stats, 0, 0, 0, units='km_deg')
+                        el_main_stats = KeplerElements(a_stats, e_stats, i_stats, raan_stats, argp_stats, nu_stats, units='km_deg')
                         cov_main_stats = get_position_covariance(sigma_stats)
                         
                         debris_list_stats = []
                         debris_cov_list_stats = []
                         debris_radii_stats = []
-                        np.random.seed(123)
                         
                         for i in range(num_debris_stats):
-                            a_d = a_stats + np.random.uniform(-100, 100)
-                            e_d = np.random.uniform(0, 0.02)
-                            i_d = i_stats + np.random.uniform(-5, 5)
-                            raan_d = np.random.uniform(0, 360)
-                            argp_d = np.random.uniform(0, 360)
-                            nu_d = np.random.uniform(0, 360)
+                            a_d = st.session_state[f'stats_a_d_{i}']
+                            e_d = st.session_state[f'stats_e_d_{i}']
+                            i_d = st.session_state[f'stats_i_d_{i}']
+                            raan_d = st.session_state[f'stats_raan_d_{i}']
+                            argp_d = st.session_state[f'stats_argp_d_{i}']
+                            nu_d = st.session_state[f'stats_nu_d_{i}']
                             
                             el_d = KeplerElements(a_d, e_d, i_d, raan_d, argp_d, nu_d, units='km_deg')
                             debris_list_stats.append(el_d)
                             
-                            sigma_d = np.random.uniform(0.05, 0.3)
+                            sigma_d = st.session_state[f'stats_sigma_d_{i}']
                             debris_cov_list_stats.append(get_position_covariance(sigma_d))
                             
-                            debris_radii_stats.append(np.random.uniform(0.5, 8) / 1000.0)
+                            r_d = st.session_state[f'stats_r_d_{i}']
+                            debris_radii_stats.append(r_d / 1000.0)
                         
                         stats_result = generate_collision_statistics(
                             el_main_stats, debris_list_stats, cov_main_stats, debris_cov_list_stats,
-                            main_radius=5.0 / 1000.0,
+                            main_radius=r_stats_radius / 1000.0,
                             debris_radii=debris_radii_stats,
                             time_windows=[1, 2, 3, 5, 7, 14, 30],
                             t_start=0,
@@ -1825,9 +1932,12 @@ elif page == "☄️ 碰撞风险评估":
                         
                         st.session_state['stats_result'] = stats_result
                         st.session_state['stats_done'] = True
+                        st.session_state['stats_num_debris'] = num_debris_stats
                         st.success("统计数据生成完成!")
                     except Exception as ex:
                         st.error(f"统计分析失败: {str(ex)}")
+                        import traceback
+                        st.error(traceback.format_exc())
                         st.session_state['stats_done'] = False
         
         with col_stats_results:
@@ -1835,6 +1945,7 @@ elif page == "☄️ 碰撞风险评估":
                 st.info("请设置参数后点击 '生成碰撞统计数据' 按钮")
             else:
                 stats_result = st.session_state['stats_result']
+                display_num = st.session_state.get('stats_num_debris', num_debris_stats)
                 
                 fig_cumulative = create_collision_cumulative_plot(stats_result)
                 st.plotly_chart(fig_cumulative, use_container_width=True)
@@ -1847,7 +1958,7 @@ elif page == "☄️ 碰撞风险评估":
                 
                 col_sum1, col_sum2 = st.columns(2)
                 with col_sum1:
-                    st.metric("分析碎片数量", f"{num_debris_stats} 个")
+                    st.metric("分析碎片数量", f"{display_num} 个")
                     st.metric("最小接近距离", f"{np.min(stats_result['distances']):.2f} km")
                 with col_sum2:
                     st.metric("平均接近距离", f"{np.mean(stats_result['distances']):.2f} km")
