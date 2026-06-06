@@ -96,7 +96,7 @@ def project_covariance_to_b_plane(cov1, cov2, projection_matrix):
     return projected
 
 
-def compute_collision_probability(b_plane_pos, cov_b_plane, collision_radius, grid_size=200):
+def compute_collision_probability(b_plane_pos, cov_b_plane, collision_radius, grid_size=200, method='adaptive'):
     det = np.linalg.det(cov_b_plane)
     if det <= 0 or collision_radius <= 0:
         return 0.0
@@ -104,11 +104,24 @@ def compute_collision_probability(b_plane_pos, cov_b_plane, collision_radius, gr
     inv_cov = np.linalg.inv(cov_b_plane)
     norm_factor = 1.0 / (2 * np.pi * np.sqrt(det))
     
-    max_sigma = 10
-    sigma_max = max(np.sqrt(cov_b_plane[0, 0]), np.sqrt(cov_b_plane[1, 1]))
-    
     dist_from_center = np.linalg.norm(b_plane_pos)
     
+    if method == 'analytical' or dist_from_center > 10 * collision_radius:
+        sigma1 = np.sqrt(cov_b_plane[0, 0])
+        sigma2 = np.sqrt(cov_b_plane[1, 1])
+        sigma_avg = np.sqrt(sigma1 * sigma2)
+        
+        if collision_radius < sigma_avg / 3:
+            x, y = b_plane_pos
+            exponent = -0.5 * (x * inv_cov[0, 0] * x + 
+                               2 * x * inv_cov[0, 1] * y + 
+                               y * inv_cov[1, 1] * y)
+            pdf_at_center = norm_factor * np.exp(exponent)
+            prob = np.pi * collision_radius**2 * pdf_at_center
+            return min(prob, 1.0)
+    
+    max_sigma = 8
+    sigma_max = max(np.sqrt(cov_b_plane[0, 0]), np.sqrt(cov_b_plane[1, 1]))
     range_needed = max(collision_radius, dist_from_center + max_sigma * sigma_max)
     
     x = np.linspace(-range_needed, range_needed, grid_size)
@@ -119,6 +132,9 @@ def compute_collision_probability(b_plane_pos, cov_b_plane, collision_radius, gr
     X, Y = np.meshgrid(x, y)
     
     in_circle = (X**2 + Y**2) <= collision_radius**2
+    
+    if not np.any(in_circle):
+        return 0.0
     
     dX = X - b_plane_pos[0]
     dY = Y - b_plane_pos[1]
@@ -194,91 +210,151 @@ def compute_maneuver_effect(elements1, elements2, cov1, cov2,
     return result
 
 
+def estimate_dv_effect_fast(elements1, elements2, dv_vec, t_maneuver, t_ca):
+    r0, v0 = get_state_at_time(elements1, t_maneuver)
+    v_new = v0 + dv_vec
+    from orbit_core import rv_to_kepler
+    new_elements = rv_to_kepler(r0, v_new, units=elements1.units)
+    
+    dt = t_ca - t_maneuver
+    if dt < 0:
+        return None
+    
+    try:
+        el1_new = propagate_orbit(new_elements, 0, dt)
+        r1_new, v1_new = kepler_to_rv(el1_new)
+        
+        el2_at_ca = propagate_orbit(elements2, 0, dt)
+        r2, v2 = kepler_to_rv(el2_at_ca)
+        
+        r_rel = r1_new - r2
+        v_rel = v1_new - v2
+        
+        b_plane_pos, proj_matrix = project_to_b_plane(r_rel, v_rel)
+        
+        return {
+            'b_plane_pos': b_plane_pos,
+            'r_rel': r_rel,
+            'v_rel': v_rel,
+            'min_distance': np.linalg.norm(r_rel)
+        }
+    except Exception:
+        return None
+
+
+def binary_search_dv(elements1, elements2, cov1, cov2, radius1, radius2,
+                     direction, t_maneuver, t_ca, target_prob,
+                     max_dv=1.0, tol=1e-5):
+    low = 0.0
+    high = max_dv
+    
+    result_zero = compute_maneuver_effect(
+        elements1, elements2, cov1, cov2,
+        radius1, radius2, np.zeros(3), t_maneuver, t_ca
+    )
+    
+    if result_zero['collision_probability'] <= target_prob:
+        return 0.0, result_zero
+    
+    result_max = compute_maneuver_effect(
+        elements1, elements2, cov1, cov2,
+        radius1, radius2, high * direction, t_maneuver, t_ca
+    )
+    if result_max['collision_probability'] > target_prob:
+        return None, None
+    
+    for _ in range(15):
+        mid = (low + high) / 2
+        result_mid = compute_maneuver_effect(
+            elements1, elements2, cov1, cov2,
+            radius1, radius2, mid * direction, t_maneuver, t_ca
+        )
+        
+        if result_mid['collision_probability'] <= target_prob:
+            high = mid
+            best_result = result_mid
+        else:
+            low = mid
+        
+        if high - low < tol:
+            break
+    
+    return high, best_result
+
+
 def find_min_dv_maneuver(elements1, elements2, cov1, cov2,
                          radius1=5.0, radius2=5.0,
                          t_ca=None, t_maneuver_offset=6*3600,
-                         target_prob=1e-6, max_dv=1.0, dv_step=0.001):
+                         target_prob=1e-6, max_dv=1.0):
     if t_ca is None:
-        approach = find_closest_approach(elements1, elements2)
+        approach = find_closest_approach(elements1, elements2, dt_coarse=60)
         t_ca = approach['t_closest']
     
     t_maneuver = max(0, t_ca - t_maneuver_offset)
     
     r1, v1 = get_state_at_time(elements1, t_maneuver)
-    v_mag = np.linalg.norm(v1)
-    
     radial_dir = r1 / np.linalg.norm(r1)
-    along_track_dir = v1 / v_mag
+    along_track_dir = v1 / np.linalg.norm(v1)
     normal_dir = np.cross(along_track_dir, radial_dir)
     normal_dir = normal_dir / np.linalg.norm(normal_dir)
     
-    directions = [
-        radial_dir, -radial_dir,
-        along_track_dir, -along_track_dir,
-        normal_dir, -normal_dir
-    ]
+    base_result = compute_maneuver_effect(
+        elements1, elements2, cov1, cov2,
+        radius1, radius2, np.zeros(3), t_maneuver, t_ca
+    )
     
-    best_dv = None
-    best_dv_mag = float('inf')
-    best_result = None
-    
-    for direction in directions:
-        dv_mag = 0.0
-        while dv_mag <= max_dv:
-            dv_vec = dv_mag * direction
-            result = compute_maneuver_effect(
-                elements1, elements2, cov1, cov2,
-                radius1, radius2, dv_vec, t_maneuver, t_ca
-            )
-            
-            if result['collision_probability'] <= target_prob:
-                if dv_mag < best_dv_mag:
-                    best_dv_mag = dv_mag
-                    best_dv = dv_vec
-                    best_result = result
-                break
-            
-            dv_mag += dv_step
-    
-    combinations = [
-        (radial_dir + along_track_dir),
-        (radial_dir - along_track_dir),
-        (radial_dir + normal_dir),
-        (radial_dir - normal_dir),
-        (along_track_dir + normal_dir),
-        (along_track_dir - normal_dir),
-        (radial_dir + along_track_dir + normal_dir)
-    ]
-    
-    for comb in combinations:
-        comb = comb / np.linalg.norm(comb)
-        dv_mag = 0.0
-        while dv_mag <= max_dv:
-            dv_vec = dv_mag * comb
-            result = compute_maneuver_effect(
-                elements1, elements2, cov1, cov2,
-                radius1, radius2, dv_vec, t_maneuver, t_ca
-            )
-            
-            if result['collision_probability'] <= target_prob:
-                if dv_mag < best_dv_mag:
-                    best_dv_mag = dv_mag
-                    best_dv = dv_vec
-                    best_result = result
-                break
-            
-            dv_mag += dv_step
-    
-    if best_dv is not None:
+    if base_result['collision_probability'] <= target_prob:
         return {
             'success': True,
-            'dv_vec': best_dv,
+            'dv_vec': np.zeros(3),
+            'dv_magnitude': 0.0,
+            't_maneuver': t_maneuver,
+            'result_after_maneuver': base_result,
+            'radial_component': 0.0,
+            'along_track_component': 0.0,
+            'normal_component': 0.0,
+            'message': '当前碰撞概率已在目标值以下，无需机动'
+        }
+    
+    directions = [
+        ('radial+', radial_dir),
+        ('radial-', -radial_dir),
+        ('along+', along_track_dir),
+        ('along-', -along_track_dir),
+        ('normal+', normal_dir),
+        ('normal-', -normal_dir),
+    ]
+    
+    best_dv_mag = float('inf')
+    best_dv_vec = None
+    best_result = None
+    best_dir_name = None
+    
+    for dir_name, direction in directions:
+        dv_mag, result = binary_search_dv(
+            elements1, elements2, cov1, cov2,
+            radius1, radius2, direction,
+            t_maneuver, t_ca, target_prob,
+            max_dv=max_dv, tol=1e-4
+        )
+        
+        if dv_mag is not None and dv_mag < best_dv_mag:
+            best_dv_mag = dv_mag
+            best_dv_vec = dv_mag * direction
+            best_result = result
+            best_dir_name = dir_name
+    
+    if best_dv_vec is not None:
+        return {
+            'success': True,
+            'dv_vec': best_dv_vec,
             'dv_magnitude': best_dv_mag,
             't_maneuver': t_maneuver,
             'result_after_maneuver': best_result,
-            'radial_component': np.dot(best_dv, radial_dir),
-            'along_track_component': np.dot(best_dv, along_track_dir),
-            'normal_component': np.dot(best_dv, normal_dir)
+            'radial_component': np.dot(best_dv_vec, radial_dir),
+            'along_track_component': np.dot(best_dv_vec, along_track_dir),
+            'normal_component': np.dot(best_dv_vec, normal_dir),
+            'optimal_direction': best_dir_name
         }
     else:
         return {
