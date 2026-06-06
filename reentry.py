@@ -89,7 +89,7 @@ def mach_number(v, T):
     return v / a
 
 
-def aerodynamic_coefficients(M, alpha_deg, Cd0=0.05, CL_alpha=0.05, alpha_max_LD=10.0):
+def aerodynamic_coefficients(M, alpha_deg, Cd0=0.15, CL_alpha=0.10, alpha_max_LD=10.0):
     alpha = np.deg2rad(alpha_deg)
     
     if M < 1.0:
@@ -97,12 +97,12 @@ def aerodynamic_coefficients(M, alpha_deg, Cd0=0.05, CL_alpha=0.05, alpha_max_LD
         CL = CL_alpha * alpha_deg
     elif M < 5.0:
         Cd = Cd0 + (2.0 + 0.5 * (M - 1.0)) * np.sin(alpha) ** 2
-        CL = CL_alpha * alpha_deg * (1.0 - 0.1 * (M - 1.0))
+        CL = CL_alpha * alpha_deg * (1.0 - 0.05 * (M - 1.0))
     else:
         Cd = Cd0 + 4.0 * np.sin(alpha) ** 2
-        CL = CL_alpha * alpha_deg * 0.6
+        CL = CL_alpha * alpha_deg * 0.8
     
-    CL = np.clip(CL, -1.0, 1.0)
+    CL = np.clip(CL, -1.5, 1.5)
     
     return Cd, CL
 
@@ -117,23 +117,20 @@ def stagnation_heat_flux(v, rho, R_n=0.1):
     return q
 
 
-def ablation_rate(q, T_surface, T_threshold=1500.0, ablation_coeff=1e-8):
+def ablation_rate(q, T_surface, T_threshold=1500.0, ablation_coeff=2e-7):
     if T_surface < T_threshold:
         return 0.0
     
-    return ablation_coeff * max(0, q - 1e5)
+    return ablation_coeff * max(0, q - 5e4) / 1000.0
 
 
-def surface_temperature(q, T_prev, dt, emissivity=0.85, heat_capacity=1000.0, mass_per_area=10.0):
+def surface_temperature_derivative(q, T, emissivity=0.85, heat_capacity=800.0, mass_per_area=5.0):
     sigma = 5.67e-8
     
-    q_rad = emissivity * sigma * (T_prev ** 4)
-    dT = (q - q_rad) * dt / (heat_capacity * mass_per_area)
+    q_rad = emissivity * sigma * (T ** 4)
+    dT_dt = (q - q_rad) / (heat_capacity * mass_per_area)
     
-    T_new = T_prev + dT
-    T_new = max(200.0, T_new)
-    
-    return T_new
+    return dT_dt
 
 
 class ReentryVehicle:
@@ -172,14 +169,16 @@ def reentry_equations(t, state, vehicle, reentry_mode='ballistic', alpha=0.0, ba
     
     if reentry_mode == 'ballistic':
         alpha_eff = 0.0
+        bank_eff = 0.0
     else:
         alpha_eff = alpha
+        bank_eff = bank_angle
     
     Cd, CL = aerodynamic_coefficients(M, alpha_eff, vehicle.Cd0, vehicle.CL_alpha, vehicle.alpha_max_LD)
     
     q = stagnation_heat_flux(v, rho, vehicle.nose_radius)
     
-    T_surf = surface_temperature(q, T_surf, 0.01)
+    dT_surf_dt = surface_temperature_derivative(q, T_surf)
     
     dm_dt = -ablation_rate(q, T_surf, vehicle.ablation_threshold) * vehicle.reference_area
     
@@ -196,7 +195,7 @@ def reentry_equations(t, state, vehicle, reentry_mode='ballistic', alpha=0.0, ba
     D_km = D / 1000.0
     L_km = L / 1000.0
     
-    bank_rad = np.deg2rad(bank_angle)
+    bank_rad = np.deg2rad(bank_eff)
     L_vertical = L_km * np.cos(bank_rad)
     L_horizontal = L_km * np.sin(bank_rad)
     
@@ -229,7 +228,7 @@ def reentry_equations(t, state, vehicle, reentry_mode='ballistic', alpha=0.0, ba
     gamma_deg = np.rad2deg(dgamma_dt)
     chi_deg = np.rad2deg(dchi_dt)
     
-    return [dr_dt, lon_deg, lat_deg, dv_dt, gamma_deg, chi_deg, dm_dt, 0.0]
+    return [dr_dt, lon_deg, lat_deg, dv_dt, gamma_deg, chi_deg, dm_dt, dT_surf_dt]
 
 
 def simulate_reentry(vehicle, initial_conditions, reentry_mode='ballistic', 
@@ -281,6 +280,7 @@ def simulate_reentry(vehicle, initial_conditions, reentry_mode='ballistic',
     gamma_vals = states[:, 4]
     chi_vals = states[:, 5]
     m_vals = states[:, 6]
+    T_surf_vals = states[:, 7]
     
     altitudes = r_vals - R_EARTH
     
@@ -325,7 +325,7 @@ def simulate_reentry(vehicle, initial_conditions, reentry_mode='ballistic',
     
     ablation_start_idx = None
     for i in range(len(times)):
-        if heat_fluxes[i] > 1e5 and altitudes[i] < 100:
+        if T_surf_vals[i] >= vehicle.ablation_threshold and ablation_start_idx is None:
             ablation_start_idx = i
             break
     
@@ -338,6 +338,7 @@ def simulate_reentry(vehicle, initial_conditions, reentry_mode='ballistic',
         'flight_path_angles': gamma_vals,
         'heading_angles': chi_vals,
         'masses': m_vals,
+        'surface_temperatures': T_surf_vals,
         'heat_fluxes': heat_fluxes,
         'overloads': overloads,
         'mach_numbers': mach_numbers,
@@ -345,6 +346,7 @@ def simulate_reentry(vehicle, initial_conditions, reentry_mode='ballistic',
         'max_heat_flux': heat_fluxes[max_q_idx],
         'max_heat_flux_time': times[max_q_idx],
         'max_heat_flux_alt': altitudes[max_q_idx],
+        'max_surface_temp': np.max(T_surf_vals),
         'max_overload': overloads[max_g_idx],
         'max_overload_time': times[max_g_idx],
         'max_overload_alt': altitudes[max_g_idx],

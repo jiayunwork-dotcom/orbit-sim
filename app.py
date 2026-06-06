@@ -1039,7 +1039,7 @@ elif page == "🔥 再入轨迹分析":
         with col1:
             alt_reentry = st.number_input("再入高度 (km)", value=120.0, min_value=80.0, max_value=200.0, step=5.0)
             vel_reentry = st.number_input("再入速度 (km/s)", value=7.8, min_value=5.0, max_value=12.0, step=0.1)
-            gamma_reentry = st.number_input("飞行路径角 (°)", value=-3.0, min_value=-8.0, max_value=0.0, step=0.5)
+            gamma_reentry = st.number_input("飞行路径角 (°)", value=-5.0, min_value=-8.0, max_value=0.0, step=0.5)
         
         with col2:
             chi_reentry = st.number_input("航向角 (°)", value=0.0, min_value=-180.0, max_value=180.0, step=5.0)
@@ -1055,19 +1055,19 @@ elif page == "🔥 再入轨迹分析":
         col4, col5, col6 = st.columns(3)
         
         with col4:
-            mass_vehicle = st.number_input("质量 (kg)", value=1000.0, min_value=100.0, max_value=10000.0, step=100.0)
-            ref_area = st.number_input("参考面积 (m²)", value=1.0, min_value=0.1, max_value=20.0, step=0.1)
-            nose_radius = st.number_input("鼻锥半径 (m)", value=0.1, min_value=0.01, max_value=1.0, step=0.05)
+            mass_vehicle = st.number_input("质量 (kg)", value=800.0, min_value=100.0, max_value=10000.0, step=100.0)
+            ref_area = st.number_input("参考面积 (m²)", value=2.0, min_value=0.1, max_value=20.0, step=0.1)
+            nose_radius = st.number_input("鼻锥半径 (m)", value=0.05, min_value=0.01, max_value=1.0, step=0.05)
         
         with col5:
-            ablation_threshold = st.number_input("烧蚀阈值温度 (K)", value=1500.0, min_value=800.0, max_value=3000.0, step=100.0)
-            Cd0 = st.number_input("零攻角阻力系数 Cd0", value=0.05, min_value=0.01, max_value=0.5, step=0.01)
-            CL_alpha = st.number_input("升力系数导数 (1/°)", value=0.05, min_value=0.01, max_value=0.2, step=0.01)
+            ablation_threshold = st.number_input("烧蚀阈值温度 (K)", value=1000.0, min_value=500.0, max_value=3000.0, step=100.0)
+            Cd0 = st.number_input("零攻角阻力系数 Cd0", value=0.15, min_value=0.01, max_value=0.5, step=0.01)
+            CL_alpha = st.number_input("升力系数导数 (1/°)", value=0.10, min_value=0.01, max_value=0.3, step=0.01)
         
         with col6:
             alpha_max_LD = st.number_input("最大升阻比对应攻角 (°)", value=10.0, min_value=0.0, max_value=30.0, step=1.0)
-            alpha_lifting = st.number_input("升力再入攻角 (°)", value=5.0, min_value=0.0, max_value=30.0, step=1.0)
-            bank_angle = st.number_input("倾斜角 (°)", value=30.0, min_value=-90.0, max_value=90.0, step=5.0)
+            alpha_lifting = st.number_input("升力再入攻角 (°)", value=10.0, min_value=0.0, max_value=30.0, step=1.0)
+            bank_angle = st.number_input("倾斜角 (°)", value=45.0, min_value=-90.0, max_value=90.0, step=5.0)
         
         st.markdown("---")
         
@@ -1102,6 +1102,7 @@ elif page == "🔥 再入轨迹分析":
                     st.session_state['reentry_results_ballistic'] = results_ballistic
                     st.session_state['reentry_results_lifting'] = results_lifting
                     st.session_state['reentry_sim_done'] = True
+                    st.session_state['ablation_threshold'] = ablation_threshold
                     
                     st.success("仿真完成! 请查看 '仿真结果' 标签页")
                 except Exception as ex:
@@ -1123,6 +1124,7 @@ elif page == "🔥 再入轨迹分析":
                 st.markdown("#### 🔴 弹道再入")
                 st.metric("最大热流", f"{results_b['max_heat_flux']:.2e} W/m²", 
                          f"t={results_b['max_heat_flux_time']:.1f}s, h={results_b['max_heat_flux_alt']:.1f}km")
+                st.metric("最大表面温度", f"{results_b['max_surface_temp']:.1f} K")
                 st.metric("最大过载", f"{results_b['max_overload']:.2f} g", 
                          f"t={results_b['max_overload_time']:.1f}s, h={results_b['max_overload_alt']:.1f}km")
                 if results_b['ablation_start_time'] is not None:
@@ -1139,6 +1141,7 @@ elif page == "🔥 再入轨迹分析":
                 st.markdown("#### 🔵 升力再入")
                 st.metric("最大热流", f"{results_l['max_heat_flux']:.2e} W/m²", 
                          f"t={results_l['max_heat_flux_time']:.1f}s, h={results_l['max_heat_flux_alt']:.1f}km")
+                st.metric("最大表面温度", f"{results_l['max_surface_temp']:.1f} K")
                 st.metric("最大过载", f"{results_l['max_overload']:.2f} g", 
                          f"t={results_l['max_overload_time']:.1f}s, h={results_l['max_overload_alt']:.1f}km")
                 if results_l['ablation_start_time'] is not None:
@@ -1172,6 +1175,7 @@ elif page == "🔥 再入轨迹分析":
             
             with tab_res2:
                 st.subheader("热流密度-时间曲线")
+                ablation_thresh_display = st.session_state.get('ablation_threshold', 1000.0)
                 fig3 = create_reentry_heat_flux_plot(results_b, results_l, 1e5)
                 st.plotly_chart(fig3, use_container_width=True)
                 
